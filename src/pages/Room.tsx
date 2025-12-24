@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
 import { PlayerCard } from "@/components/PlayerCard";
 import { WordReveal } from "@/components/WordReveal";
 import { Copy, LogOut, Play, RotateCcw, Users, Loader2 } from "lucide-react";
@@ -44,7 +44,7 @@ const Room = () => {
   const [isImpostor, setIsImpostor] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isActionLoading, setIsActionLoading] = useState(false);
-  const [numImpostors, setNumImpostors] = useState<number[]>([1]);
+  const [numImpostors, setNumImpostors] = useState<number>(1);
   const isFetchingWordRef = useRef(false);
   
   const { startGame, resetGame } = useGame();
@@ -57,10 +57,10 @@ const Room = () => {
   
   // Update numImpostors if it exceeds the new max
   useEffect(() => {
-    if (activePlayers.length > 0 && numImpostors[0] > maxImpostors) {
-      setNumImpostors([maxImpostors]);
+    if (activePlayers.length > 0 && numImpostors > maxImpostors) {
+      setNumImpostors(maxImpostors);
     }
-  }, [maxImpostors, activePlayers.length]);
+  }, [maxImpostors, activePlayers.length, numImpostors]);
 
   // Fetch room data
   const fetchRoom = useCallback(async () => {
@@ -88,7 +88,7 @@ const Room = () => {
     setRoom(roomData);
     // Initialize numImpostors from room data or default to 1
     if (roomData.num_impostors) {
-      setNumImpostors([roomData.num_impostors]);
+      setNumImpostors(roomData.num_impostors);
     }
   }, [code, navigate]);
 
@@ -281,8 +281,7 @@ const Room = () => {
   const handleStartGame = async () => {
     if (!room?.id || !currentPlayerId || !canStart) return;
     
-    const impostorCount = numImpostors[0];
-    if (impostorCount < 1 || impostorCount >= activePlayers.length) {
+    if (numImpostors < 1 || numImpostors >= activePlayers.length) {
       toast.error("Número de impostores inválido");
       return;
     }
@@ -290,7 +289,7 @@ const Room = () => {
     setIsActionLoading(true);
     
     try {
-      await startGame(room.id, currentPlayerId, impostorCount);
+      await startGame(room.id, currentPlayerId, numImpostors);
       await fetchRoom();
     } catch (error) {
       // Error is already handled in the hook
@@ -405,21 +404,24 @@ const Room = () => {
               <div className="space-y-4 pt-4 border-t border-border">
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                    <label htmlFor="impostor-count" className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
                       Número de Impostores
                     </label>
-                    <span className="text-sm font-mono text-primary">
-                      {numImpostors[0]}
-                    </span>
                   </div>
-                  <Slider
-                    value={numImpostors}
-                    onValueChange={setNumImpostors}
+                  <Input
+                    id="impostor-count"
+                    type="number"
                     min={1}
                     max={maxImpostors}
-                    step={1}
+                    value={numImpostors}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value, 10);
+                      if (!isNaN(value) && value >= 1 && value <= maxImpostors) {
+                        setNumImpostors(value);
+                      }
+                    }}
                     disabled={!canStart || isActionLoading}
-                    className="w-full"
+                    className="w-full text-center"
                   />
                   <p className="text-xs text-center text-muted-foreground">
                     Máximo: {maxImpostors} impostor{maxImpostors !== 1 ? 'es' : ''} ({activePlayers.length} jogador{activePlayers.length !== 1 ? 'es' : ''})

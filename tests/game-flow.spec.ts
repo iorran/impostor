@@ -37,52 +37,18 @@ const joinPlayerToRoom = async (page: Page, playerName: string, roomCode: string
   await page.waitForURL(/\/room\/[A-Z0-9]{4}/, { timeout: 15000 });
 };
 
-// Helper function to set impostor slider to a specific value
+// Helper function to set impostor count to a specific value
 const setImpostorCount = async (page: Page, targetValue: number) => {
-  const impostorSlider = page.locator('[role="slider"]');
-  await expect(impostorSlider).toBeVisible({ timeout: 5000 });
+  const impostorInput = page.locator('input#impostor-count, input[type="number"]').first();
+  await expect(impostorInput).toBeVisible({ timeout: 5000 });
   
-  const sliderInfo = await page.evaluate(() => {
-    const slider = document.querySelector('[role="slider"]') as HTMLElement;
-    if (!slider) return null;
-    return {
-      current: parseInt(slider.getAttribute('aria-valuenow') || '0'),
-      min: parseInt(slider.getAttribute('aria-valuemin') || '1'),
-      max: parseInt(slider.getAttribute('aria-valuemax') || '1')
-    };
-  });
-  
-  await impostorSlider.focus();
+  // Clear the input and type the new value
+  await impostorInput.click();
+  await impostorInput.fill(targetValue.toString());
   await page.waitForTimeout(200);
   
-  if (sliderInfo) {
-    const stepsToMax = sliderInfo.max - sliderInfo.current;
-    const stepsToMin = sliderInfo.max - sliderInfo.min;
-    const stepsToTarget = targetValue - sliderInfo.min;
-    
-    // Move to max first
-    for (let i = 0; i < stepsToMax; i++) {
-      await page.keyboard.press('ArrowRight');
-      await page.waitForTimeout(50);
-    }
-    
-    // Move to min
-    for (let i = 0; i < stepsToMin; i++) {
-      await page.keyboard.press('ArrowLeft');
-      await page.waitForTimeout(50);
-    }
-    
-    // Move to target
-    for (let i = 0; i < stepsToTarget; i++) {
-      await page.keyboard.press('ArrowRight');
-      await page.waitForTimeout(50);
-    }
-  }
-  
-  await page.waitForTimeout(300);
-  
   // Verify value
-  const finalValue = await impostorSlider.getAttribute('aria-valuenow');
+  const finalValue = await impostorInput.inputValue();
   expect(parseInt(finalValue || '0')).toBe(targetValue);
 };
 
@@ -245,91 +211,52 @@ test.describe('Impostor Game Flow', () => {
         console.log('Waiting for players to sync...');
       });
       
-      // Set the number of impostors using the slider
-      // The slider should be visible for the host
-      const impostorSlider = hostPage.locator('[role="slider"]');
-      await expect(impostorSlider).toBeVisible({ timeout: 5000 });
+      // Set the number of impostors using the number input
+      // The input should be visible for the host
+      const impostorInput = hostPage.locator('input#impostor-count, input[type="number"]').first();
+      await expect(impostorInput).toBeVisible({ timeout: 5000 });
       
       // Get current value, min, and max before interaction
-      const sliderInfo = await hostPage.evaluate(() => {
-        const slider = document.querySelector('[role="slider"]') as HTMLElement;
-        if (!slider) return null;
+      const inputInfo = await hostPage.evaluate(() => {
+        const input = document.querySelector('input#impostor-count, input[type="number"]') as HTMLInputElement;
+        if (!input) return null;
         return {
-          current: parseInt(slider.getAttribute('aria-valuenow') || '0'),
-          min: parseInt(slider.getAttribute('aria-valuemin') || '1'),
-          max: parseInt(slider.getAttribute('aria-valuemax') || '1')
+          current: parseInt(input.value || '0'),
+          min: parseInt(input.min || '1'),
+          max: parseInt(input.max || '1')
         };
       });
       
-      console.log(`Impostor count before interaction: ${sliderInfo?.current}, min: ${sliderInfo?.min}, max: ${sliderInfo?.max}`);
+      console.log(`Impostor count before interaction: ${inputInfo?.current}, min: ${inputInfo?.min}, max: ${inputInfo?.max}`);
       
-      // Focus the slider first
-      await impostorSlider.focus();
-      await hostPage.waitForTimeout(200);
+      // Set to minimum value (1 for 3 players)
+      await impostorInput.click();
+      await impostorInput.fill('1');
+      await hostPage.waitForTimeout(300);
       
-      // Always scroll to minimum first by pressing ArrowLeft multiple times
-      // This ensures we start from the minimum value
-      if (sliderInfo) {
-        // Press ArrowLeft enough times to reach minimum (go to max first, then to min)
-        // Calculate how many steps from current to max, then to min
-        const stepsToMax = sliderInfo.max - sliderInfo.current;
-        const stepsToMin = sliderInfo.max - sliderInfo.min;
-        
-        // First, move to max (ArrowRight)
-        for (let i = 0; i < stepsToMax; i++) {
-          await hostPage.keyboard.press('ArrowRight');
-          await hostPage.waitForTimeout(50);
-        }
-        
-        // Then, move to minimum (ArrowLeft)
-        for (let i = 0; i < stepsToMin; i++) {
-          await hostPage.keyboard.press('ArrowLeft');
-          await hostPage.waitForTimeout(50);
-        }
-      }
-      
-      await hostPage.waitForTimeout(300); // Wait for state to update
-      
-      // Verify slider is at minimum
-      const finalSliderValue = await impostorSlider.getAttribute('aria-valuenow');
-      console.log(`Slider value after scrolling to minimum: ${finalSliderValue}`);
+      // Verify input is at minimum
+      const finalInputValue = await impostorInput.inputValue();
+      console.log(`Input value after setting to minimum: ${finalInputValue}`);
       
       // The minimum should be 1 (for 3 players, max is 1, so min is also 1)
-      const expectedMin = sliderInfo?.min || 1;
-      expect(parseInt(finalSliderValue || '0')).toBe(expectedMin);
+      const expectedMin = inputInfo?.min || 1;
+      expect(parseInt(finalInputValue || '0')).toBe(expectedMin);
       
-      // Verify the impostor count is displayed correctly
-      // The number is displayed in a span with font-mono class near "Número de Impostores"
-      // Wait for the displayed value to update
+      // Verify the impostor count is displayed correctly in the input
       await hostPage.waitForFunction(
         () => {
-          const slider = document.querySelector('[role="slider"]') as HTMLElement;
-          if (!slider) return false;
-          const sliderValue = parseInt(slider.getAttribute('aria-valuenow') || '0');
-          // Find the displayed number near "Número de Impostores"
-          const labels = Array.from(document.querySelectorAll('label'));
-          const impostorLabel = labels.find(l => l.textContent?.includes('Número de Impostores'));
-          if (!impostorLabel) return false;
-          const parent = impostorLabel.parentElement;
-          if (!parent) return false;
-          const displaySpan = parent.querySelector('span.font-mono');
-          if (!displaySpan) return false;
-          const displayedValue = parseInt(displaySpan.textContent || '0');
-          return displayedValue === sliderValue && sliderValue === 1;
+          const input = document.querySelector('input#impostor-count, input[type="number"]') as HTMLInputElement;
+          if (!input) return false;
+          const inputValue = parseInt(input.value || '0');
+          return inputValue === 1;
         },
         { timeout: 3000 }
       );
       
-      // Get the displayed value - find the span.font-mono that shows the impostor count
-      // It should be in the same container as "Número de Impostores"
+      // Get the displayed value from the input
       const impostorCountText = await hostPage.evaluate(() => {
-        const labels = Array.from(document.querySelectorAll('label'));
-        const impostorLabel = labels.find(l => l.textContent?.includes('Número de Impostores'));
-        if (!impostorLabel) return null;
-        const parent = impostorLabel.closest('div');
-        if (!parent) return null;
-        const displaySpan = parent.querySelector('span.font-mono');
-        return displaySpan?.textContent || null;
+        const input = document.querySelector('input#impostor-count, input[type="number"]') as HTMLInputElement;
+        return input?.value || null;
       });
       
       console.log(`Number of impostors displayed: ${impostorCountText}`);
@@ -612,16 +539,16 @@ test.describe('Impostor Game Flow', () => {
     
     await page.waitForURL(/\/room\/[A-Z0-9]{4}/);
     
-    // Verify slider is visible for host
+    // Verify input is visible for host
     await expect(page.locator('text=Número de Impostores')).toBeVisible();
     
-    // Check slider exists
-    const slider = page.locator('input[type="range"], [role="slider"]');
-    await expect(slider).toBeVisible();
+    // Check number input exists
+    const impostorInput = page.locator('input#impostor-count, input[type="number"]').first();
+    await expect(impostorInput).toBeVisible();
     
     // Verify default value is 1
-    const impostorCount = page.locator('text=/\\d+/').filter({ hasText: /^[1-9]$/ }).first();
-    await expect(impostorCount).toContainText('1');
+    const inputValue = await impostorInput.inputValue();
+    expect(parseInt(inputValue || '0')).toBe(1);
   });
 
   test('should prevent starting game with less than 3 players', async ({ page }) => {
