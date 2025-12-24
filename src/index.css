@@ -1,0 +1,138 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+@layer base {
+  :root {
+    --background: 0 0% 4%;
+    --foreground: 45 10% 90%;
+
+    --card: 0 0% 7%;
+    --card-foreground: 45 10% 90%;
+
+    --popover: 0 0% 7%;
+    --popover-foreground: 45 10% 90%;
+
+    --primary: 38 92% 50%;
+    --primary-foreground: 0 0% 4%;
+
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 45 10% 90%;
+
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 55%;
+
+    --accent: 38 92% 50%;
+    --accent-foreground: 0 0% 4%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 45 10% 90%;
+
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 38 92% 50%;
+
+    --radius: 0.25rem;
+
+    /* Custom game colors */
+    --impostor: 0 72% 51%;
+    --crewmate: 210 100% 50%;
+
+    /* Glow effects */
+    --glow-primary: 0 0 20px hsl(38 92% 50% / 0.4);
+    --glow-impostor: 0 0 30px hsl(0 72% 51% / 0.5);
+    --glow-crewmate: 0 0 30px hsl(210 100% 50% / 0.5);
+
+    --sidebar-background: 0 0% 7%;
+    --sidebar-foreground: 45 10% 90%;
+    --sidebar-primary: 38 92% 50%;
+    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 45 10% 90%;
+    --sidebar-border: 0 0% 18%;
+    --sidebar-ring: 38 92% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer components {
+  .room-code {
+    @apply font-mono text-4xl font-bold tracking-[0.3em] text-primary;
+  }
+
+  .card-sharp {
+    @apply bg-card border border-border p-6;
+  }
+
+  .glow-primary {
+    box-shadow: var(--glow-primary);
+  }
+
+  .glow-impostor {
+    box-shadow: var(--glow-impostor);
+  }
+
+  .glow-crewmate {
+    box-shadow: var(--glow-crewmate);
+  }
+
+  .role-badge {
+    @apply font-mono uppercase text-xs tracking-widest px-3 py-1 border;
+  }
+
+  .role-impostor {
+    @apply bg-impostor/20 border-impostor text-impostor;
+  }
+
+  .role-crewmate {
+    @apply bg-crewmate/20 border-crewmate text-crewmate;
+  }
+}
+
+@layer utilities {
+  .animate-reveal {
+    animation: reveal 0.6s ease-out forwards;
+  }
+
+  @keyframes reveal {
+    0% {
+      opacity: 0;
+      transform: scale(0.8) rotateX(90deg);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1) rotateX(0deg);
+    }
+  }
+
+  .animate-pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% {
+      box-shadow: 0 0 20px hsl(38 92% 50% / 0.3);
+    }
+    50% {
+      box-shadow: 0 0 40px hsl(38 92% 50% / 0.6);
+    }
+  }
+}
+
