@@ -140,6 +140,10 @@ export const useGame = () => {
 
         const newRoundNumber = roomData.round_number + 1;
 
+        // Randomly select a starting player
+        const randomIndex = Math.floor(Math.random() * shuffledPlayers.length);
+        const startingPlayer = shuffledPlayers[randomIndex];
+
         // Clear ALL old words for this room to ensure clean state
         await supabase
           .from("player_words")
@@ -155,6 +159,7 @@ export const useGame = () => {
             word: crewmateWord,
             impostor_word: impostorWord,
             num_impostors: numImpostors,
+            starting_player_id: startingPlayer.id,
           })
           .eq("id", roomId);
 
@@ -304,6 +309,10 @@ export const useGame = () => {
 
         const newRoundNumber = roomData.round_number + 1;
 
+        // Randomly select a starting player
+        const randomIndex = Math.floor(Math.random() * shuffledPlayers.length);
+        const startingPlayer = shuffledPlayers[randomIndex];
+
         // Step 1: Clear ALL old words for this room FIRST (including from previous rounds)
         // This ensures no duplicate words exist
         const { error: deleteError } = await supabase
@@ -316,13 +325,14 @@ export const useGame = () => {
           throw deleteError;
         }
 
-        // Step 2: Update room with new round number and words
+        // Step 2: Update room with new round number, words, and starting player
         const { error: updateError } = await supabase
           .from("rooms")
           .update({
             round_number: newRoundNumber,
             word: crewmateWord,
             impostor_word: impostorWord,
+            starting_player_id: startingPlayer.id,
           })
           .eq("id", roomId);
 

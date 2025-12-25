@@ -706,5 +706,633 @@ test.describe('Impostor Game Flow', () => {
       await Promise.all(contexts.map(ctx => ctx.close()));
     }
   });
+
+  test('should allow host to remove players from room', async ({ browser }) => {
+    test.setTimeout(60000); // 1 minute timeout
+    
+    // Create browser contexts for host and 3 players
+    const hostContext = await browser.newContext();
+    const player2Context = await browser.newContext();
+    const player3Context = await browser.newContext();
+    const player4Context = await browser.newContext();
+
+    const hostPage = await hostContext.newPage();
+    const player2Page = await player2Context.newPage();
+    const player3Page = await player3Context.newPage();
+    const player4Page = await player4Context.newPage();
+
+    try {
+      // Step 1: Host creates a room
+      await hostPage.goto(BASE_URL);
+      await hostPage.click('text=Criar Sala');
+      await hostPage.fill('input[placeholder="Digite seu nome"]', 'Host Player');
+      await hostPage.click('button:has-text("Criar")');
+      
+      await hostPage.waitForURL(/\/room\/[A-Z0-9]{4}/);
+      const roomUrl = hostPage.url();
+      const roomCode = roomUrl.split('/').pop()?.toUpperCase() || '';
+      
+      expect(roomCode).toMatch(/^[A-Z0-9]{4}$/);
+      console.log(`Room code: ${roomCode}`);
+
+      // Step 2: Join 3 players to the room
+      await joinPlayerToRoom(player2Page, 'Player 2', roomCode);
+      await joinPlayerToRoom(player3Page, 'Player 3', roomCode);
+      await joinPlayerToRoom(player4Page, 'Player 4', roomCode);
+
+      // Step 3: Wait for all players to appear in the room
+      await hostPage.waitForSelector('text=Host Player', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 2', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 3', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 4', { timeout: 15000 });
+
+      // Verify player count is 4
+      const playerCountElement = hostPage.locator('text=/Jogadores \\(\\d+\\)/');
+      await expect(playerCountElement).toContainText('4', { timeout: 5000 });
+
+      // Wait for realtime sync
+      await hostPage.waitForTimeout(2000);
+
+      // Step 4: Verify host can see remove buttons for non-host players
+      // The remove button should be an X icon button with aria-label containing "Remover"
+      // Find buttons by looking for X icons within player cards
+      const removeButtons = hostPage.locator('button[aria-label*="Remover"]');
+      const removeButtonCount = await removeButtons.count();
+      
+      // Should have 3 remove buttons (one for each non-host player)
+      expect(removeButtonCount).toBe(3);
+
+      // Verify specific players have remove buttons
+      const player2Card = hostPage.locator('text=Player 2').locator('..').locator('..');
+      const removeButtonPlayer2 = player2Card.locator('button[aria-label*="Remover"]');
+      await expect(removeButtonPlayer2).toBeVisible({ timeout: 5000 });
+
+      const player3Card = hostPage.locator('text=Player 3').locator('..').locator('..');
+      const removeButtonPlayer3 = player3Card.locator('button[aria-label*="Remover"]');
+      await expect(removeButtonPlayer3).toBeVisible({ timeout: 5000 });
+
+      const player4Card = hostPage.locator('text=Player 4').locator('..').locator('..');
+      const removeButtonPlayer4 = player4Card.locator('button[aria-label*="Remover"]');
+      await expect(removeButtonPlayer4).toBeVisible({ timeout: 5000 });
+
+      // Step 5: Verify host cannot see remove button for themselves
+      // The host card should not have a remove button
+      const hostCard = hostPage.locator('text=Host Player').locator('..').locator('..');
+      const hostRemoveButton = hostCard.locator('button[aria-label*="Remover"]');
+      await expect(hostRemoveButton).toHaveCount(0, { timeout: 2000 });
+
+      // Step 6: Verify non-host players cannot see remove buttons
+      const player2RemoveButtons = player2Page.locator('button[aria-label*="Remover"]');
+      await expect(player2RemoveButtons).toHaveCount(0, { timeout: 2000 });
+
+      // Step 7: Remove Player 2
+      await removeButtonPlayer2.click();
+      await hostPage.waitForTimeout(1000); // Wait for deletion and realtime update
+
+      // Step 8: Verify Player 2 is removed from host's view
+      await expect(hostPage.locator('text=Player 2')).not.toBeVisible({ timeout: 5000 });
+      
+      // Verify player count decreased to 3
+      await expect(playerCountElement).toContainText('3', { timeout: 5000 });
+
+      // Step 9: Verify Player 2's page was redirected to homepage
+      // The player should be removed from the room and redirected
+      await player2Page.waitForURL(/\/$/, { timeout: 5000 });
+      
+      // Verify Player 2 is on the homepage (should see "Criar Sala" or "Entrar na Sala" buttons)
+      const createButton = player2Page.locator('text=Criar Sala');
+      const joinButton = player2Page.locator('text=Entrar na Sala');
+      await expect(createButton.or(joinButton).first()).toBeVisible({ timeout: 5000 });
+      
+      // Step 10: Verify remaining players still see each other
+      await expect(hostPage.locator('text=Host Player')).toBeVisible();
+      await expect(hostPage.locator('text=Player 3')).toBeVisible();
+      await expect(hostPage.locator('text=Player 4')).toBeVisible();
+
+      // Step 11: Remove Player 3
+      await removeButtonPlayer3.click();
+      await hostPage.waitForTimeout(1000);
+
+      // Step 12: Verify Player 3 is removed
+      await expect(hostPage.locator('text=Player 3')).not.toBeVisible({ timeout: 5000 });
+      await expect(playerCountElement).toContainText('2', { timeout: 5000 });
+
+      // Verify Player 3 was redirected to homepage
+      await player3Page.waitForURL(/\/$/, { timeout: 5000 });
+      const createButton3 = player3Page.locator('text=Criar Sala');
+      const joinButton3 = player3Page.locator('text=Entrar na Sala');
+      await expect(createButton3.or(joinButton3).first()).toBeVisible({ timeout: 5000 });
+
+      // Step 13: Verify only Host and Player 4 remain
+      await expect(hostPage.locator('text=Host Player')).toBeVisible();
+      await expect(hostPage.locator('text=Player 4')).toBeVisible();
+
+      // Step 14: Verify start button is disabled (need 3+ players)
+      const startButton = hostPage.locator('button:has-text("Iniciar Partida")');
+      await expect(startButton).toBeDisabled({ timeout: 2000 });
+
+      // Step 15: Verify error message about minimum players
+      await expect(hostPage.locator('text=Mínimo de 3 jogadores necessários')).toBeVisible({ timeout: 2000 });
+
+    } finally {
+      await hostContext.close();
+      await player2Context.close();
+      await player3Context.close();
+      await player4Context.close();
+    }
+  });
+
+  test('should prevent removing players during active game', async ({ browser }) => {
+    test.setTimeout(90000); // 1.5 minutes timeout
+    
+    const hostContext = await browser.newContext();
+    const player2Context = await browser.newContext();
+    const player3Context = await browser.newContext();
+
+    const hostPage = await hostContext.newPage();
+    const player2Page = await player2Context.newPage();
+    const player3Page = await player3Context.newPage();
+
+    try {
+      // Step 1: Host creates a room
+      await hostPage.goto(BASE_URL);
+      await hostPage.click('text=Criar Sala');
+      await hostPage.fill('input[placeholder="Digite seu nome"]', 'Host Player');
+      await hostPage.click('button:has-text("Criar")');
+      
+      await hostPage.waitForURL(/\/room\/[A-Z0-9]{4}/);
+      const roomUrl = hostPage.url();
+      const roomCode = roomUrl.split('/').pop()?.toUpperCase() || '';
+
+      // Step 2: Join 2 players
+      await joinPlayerToRoom(player2Page, 'Player 2', roomCode);
+      await joinPlayerToRoom(player3Page, 'Player 3', roomCode);
+
+      // Step 3: Wait for all players
+      await hostPage.waitForSelector('text=Host Player', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 2', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 3', { timeout: 15000 });
+      await hostPage.waitForTimeout(2000);
+
+      // Step 4: Start the game
+      const startButton = hostPage.locator('button:has-text("Iniciar Partida")');
+      await expect(startButton).toBeEnabled({ timeout: 5000 });
+      await startButton.click();
+
+      // Wait for game to start
+      await hostPage.waitForFunction(
+        () => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const startBtn = buttons.find(btn => btn.textContent?.includes('Iniciar Partida'));
+          const restartBtn = buttons.find(btn => btn.textContent?.includes('Reiniciar Rodada'));
+          return !startBtn && restartBtn !== undefined;
+        },
+        { timeout: 15000 }
+      );
+
+      // Step 5: Verify remove buttons are not visible during game
+      // In lobby, remove buttons should be visible, but during game they should not
+      const removeButtons = hostPage.locator('button[aria-label*="Remover"]');
+      await expect(removeButtons).toHaveCount(0, { timeout: 2000 });
+
+      // Step 6: Verify game is in progress
+      await hostPage.waitForSelector('text=/Rodada \\d+/', { timeout: 10000 });
+
+    } finally {
+      await hostContext.close();
+      await player2Context.close();
+      await player3Context.close();
+    }
+  });
+
+  test('should allow host to toggle anonymous mode and hide colors/roles', async ({ browser }) => {
+    test.setTimeout(90000); // 1.5 minutes timeout
+    
+    const hostContext = await browser.newContext();
+    const player2Context = await browser.newContext();
+    const player3Context = await browser.newContext();
+
+    const hostPage = await hostContext.newPage();
+    const player2Page = await player2Context.newPage();
+    const player3Page = await player3Context.newPage();
+
+    try {
+      // Step 1: Host creates a room
+      await hostPage.goto(BASE_URL);
+      await hostPage.click('text=Criar Sala');
+      await hostPage.fill('input[placeholder="Digite seu nome"]', 'Host Player');
+      await hostPage.click('button:has-text("Criar")');
+      
+      await hostPage.waitForURL(/\/room\/[A-Z0-9]{4}/);
+      const roomUrl = hostPage.url();
+      const roomCode = roomUrl.split('/').pop()?.toUpperCase() || '';
+
+      // Step 2: Join 2 players
+      await joinPlayerToRoom(player2Page, 'Player 2', roomCode);
+      await joinPlayerToRoom(player3Page, 'Player 3', roomCode);
+
+      // Step 3: Wait for all players
+      await hostPage.waitForSelector('text=Host Player', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 2', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 3', { timeout: 15000 });
+      await hostPage.waitForTimeout(2000);
+
+      // Step 4: Verify anonymous mode switch is visible for host
+      const anonymousSwitch = hostPage.locator('label:has-text("Modo Anônimo")').locator('..').locator('button[role="switch"]');
+      await expect(anonymousSwitch).toBeVisible({ timeout: 5000 });
+
+      // Step 5: Verify switch is initially unchecked (normal mode)
+      const isChecked = await anonymousSwitch.getAttribute('data-state');
+      expect(isChecked).toBe('unchecked');
+
+      // Step 6: Toggle anonymous mode ON
+      await anonymousSwitch.click();
+      await hostPage.waitForTimeout(500); // Wait for update
+
+      // Step 7: Verify switch is now checked
+      const isCheckedAfter = await anonymousSwitch.getAttribute('data-state');
+      expect(isCheckedAfter).toBe('checked');
+
+      // Step 8: Start the game
+      const startButton = hostPage.locator('button:has-text("Iniciar Partida")');
+      await expect(startButton).toBeEnabled({ timeout: 5000 });
+      await startButton.click();
+
+      // Wait for game to start
+      await hostPage.waitForFunction(
+        () => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const startBtn = buttons.find(btn => btn.textContent?.includes('Iniciar Partida'));
+          const restartBtn = buttons.find(btn => btn.textContent?.includes('Reiniciar Rodada'));
+          return !startBtn && restartBtn !== undefined;
+        },
+        { timeout: 15000 }
+      );
+
+      // Wait for all players to receive game state
+      await Promise.all([
+        hostPage.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 }),
+        player2Page.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 }),
+        player3Page.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 })
+      ]);
+
+      await hostPage.waitForTimeout(1000);
+
+      // Step 9: Verify all players see their words
+      await Promise.all([
+        hostPage.locator('text=/Sua palavra é|Você é o/').waitFor({ timeout: 20000 }),
+        player2Page.locator('text=/Sua palavra é|Você é o/').waitFor({ timeout: 20000 }),
+        player3Page.locator('text=/Sua palavra é|Você é o/').waitFor({ timeout: 20000 })
+      ]);
+
+      // Step 10: Verify anonymous mode - no colors, no roles, no "Você é o" text
+      // Check that all players see "Sua palavra é" (not "Você é o")
+      const hostWordLabel = await hostPage.locator('text=/Sua palavra é|Você é o/').textContent();
+      const player2WordLabel = await player2Page.locator('text=/Sua palavra é|Você é o/').textContent();
+      const player3WordLabel = await player3Page.locator('text=/Sua palavra é|Você é o/').textContent();
+
+      expect(hostWordLabel).toBe('Sua palavra é');
+      expect(player2WordLabel).toBe('Sua palavra é');
+      expect(player3WordLabel).toBe('Sua palavra é');
+
+      // Step 11: Verify no role badges are visible (IMPOSTOR/CREWMATE)
+      const hostRoleBadge = hostPage.locator('text=IMPOSTOR, text=CREWMATE');
+      const player2RoleBadge = player2Page.locator('text=IMPOSTOR, text=CREWMATE');
+      const player3RoleBadge = player3Page.locator('text=IMPOSTOR, text=CREWMATE');
+
+      await expect(hostRoleBadge).toHaveCount(0, { timeout: 2000 });
+      await expect(player2RoleBadge).toHaveCount(0, { timeout: 2000 });
+      await expect(player3RoleBadge).toHaveCount(0, { timeout: 2000 });
+
+      // Step 12: Verify no colored borders (impostor/crewmate colors)
+      // In anonymous mode, cards should have neutral border-border class, not colored borders
+      const hostCard = hostPage.locator('h2.text-4xl').locator('..').locator('..');
+      const player2Card = player2Page.locator('h2.text-4xl').locator('..').locator('..');
+      const player3Card = player3Page.locator('h2.text-4xl').locator('..').locator('..');
+
+      // Check that cards don't have impostor or crewmate border classes
+      const hostCardClasses = await hostCard.getAttribute('class');
+      const player2CardClasses = await player2Card.getAttribute('class');
+      const player3CardClasses = await player3Card.getAttribute('class');
+
+      expect(hostCardClasses).not.toContain('border-impostor');
+      expect(hostCardClasses).not.toContain('border-crewmate');
+      expect(player2CardClasses).not.toContain('border-impostor');
+      expect(player2CardClasses).not.toContain('border-crewmate');
+      expect(player3CardClasses).not.toContain('border-impostor');
+      expect(player3CardClasses).not.toContain('border-crewmate');
+
+    } finally {
+      await hostContext.close();
+      await player2Context.close();
+      await player3Context.close();
+    }
+  });
+
+  test('should show colors and roles in normal mode', async ({ browser }) => {
+    test.setTimeout(90000); // 1.5 minutes timeout
+    
+    const hostContext = await browser.newContext();
+    const player2Context = await browser.newContext();
+    const player3Context = await browser.newContext();
+
+    const hostPage = await hostContext.newPage();
+    const player2Page = await player2Context.newPage();
+    const player3Page = await player3Context.newPage();
+
+    try {
+      // Step 1: Host creates a room
+      await hostPage.goto(BASE_URL);
+      await hostPage.click('text=Criar Sala');
+      await hostPage.fill('input[placeholder="Digite seu nome"]', 'Host Player');
+      await hostPage.click('button:has-text("Criar")');
+      
+      await hostPage.waitForURL(/\/room\/[A-Z0-9]{4}/);
+      const roomUrl = hostPage.url();
+      const roomCode = roomUrl.split('/').pop()?.toUpperCase() || '';
+
+      // Step 2: Join 2 players
+      await joinPlayerToRoom(player2Page, 'Player 2', roomCode);
+      await joinPlayerToRoom(player3Page, 'Player 3', roomCode);
+
+      // Step 3: Wait for all players
+      await hostPage.waitForSelector('text=Host Player', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 2', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 3', { timeout: 15000 });
+      await hostPage.waitForTimeout(2000);
+
+      // Step 4: Verify anonymous mode switch is unchecked (normal mode)
+      const anonymousSwitch = hostPage.locator('label:has-text("Modo Anônimo")').locator('..').locator('button[role="switch"]');
+      await expect(anonymousSwitch).toBeVisible({ timeout: 5000 });
+      const isChecked = await anonymousSwitch.getAttribute('data-state');
+      expect(isChecked).toBe('unchecked'); // Normal mode by default
+
+      // Step 5: Start the game in normal mode
+      const startButton = hostPage.locator('button:has-text("Iniciar Partida")');
+      await expect(startButton).toBeEnabled({ timeout: 5000 });
+      await startButton.click();
+
+      // Wait for game to start
+      await hostPage.waitForFunction(
+        () => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const startBtn = buttons.find(btn => btn.textContent?.includes('Iniciar Partida'));
+          const restartBtn = buttons.find(btn => btn.textContent?.includes('Reiniciar Rodada'));
+          return !startBtn && restartBtn !== undefined;
+        },
+        { timeout: 15000 }
+      );
+
+      // Wait for all players to receive game state
+      await Promise.all([
+        hostPage.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 }),
+        player2Page.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 }),
+        player3Page.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 })
+      ]);
+
+      await hostPage.waitForTimeout(1000);
+
+      // Step 6: Verify all players see their words
+      await Promise.all([
+        hostPage.locator('text=/Sua palavra é|Você é o/').waitFor({ timeout: 20000 }),
+        player2Page.locator('text=/Sua palavra é|Você é o/').waitFor({ timeout: 20000 }),
+        player3Page.locator('text=/Sua palavra é|Você é o/').waitFor({ timeout: 20000 })
+      ]);
+
+      // Step 7: Verify normal mode - roles and colors are visible
+      // At least one player should see a role badge (IMPOSTOR or CREWMATE)
+      const hostRoleBadge = hostPage.locator('text=IMPOSTOR, text=CREWMATE');
+      const player2RoleBadge = player2Page.locator('text=IMPOSTOR, text=CREWMATE');
+      const player3RoleBadge = player3Page.locator('text=IMPOSTOR, text=CREWMATE');
+
+      const hostHasRole = await hostRoleBadge.count() > 0;
+      const player2HasRole = await player2RoleBadge.count() > 0;
+      const player3HasRole = await player3RoleBadge.count() > 0;
+
+      // At least one player should have a role badge
+      expect(hostHasRole || player2HasRole || player3HasRole).toBe(true);
+
+      // Step 8: Verify colored borders are present
+      // At least one card should have colored border
+      const hostCard = hostPage.locator('h2.text-4xl').locator('..').locator('..');
+      const player2Card = player2Page.locator('h2.text-4xl').locator('..').locator('..');
+      const player3Card = player3Page.locator('h2.text-4xl').locator('..').locator('..');
+
+      const hostCardClasses = await hostCard.getAttribute('class');
+      const player2CardClasses = await player2Card.getAttribute('class');
+      const player3CardClasses = await player3Card.getAttribute('class');
+
+      // At least one card should have colored border
+      const hasColoredBorder = 
+        (hostCardClasses?.includes('border-impostor') || hostCardClasses?.includes('border-crewmate')) ||
+        (player2CardClasses?.includes('border-impostor') || player2CardClasses?.includes('border-crewmate')) ||
+        (player3CardClasses?.includes('border-impostor') || player3CardClasses?.includes('border-crewmate'));
+
+      expect(hasColoredBorder).toBe(true);
+
+    } finally {
+      await hostContext.close();
+      await player2Context.close();
+      await player3Context.close();
+    }
+  });
+
+  test('should randomly select a starting player when game starts', async ({ browser }) => {
+    test.setTimeout(90000); // 1.5 minutes timeout
+    
+    const hostContext = await browser.newContext();
+    const player2Context = await browser.newContext();
+    const player3Context = await browser.newContext();
+
+    const hostPage = await hostContext.newPage();
+    const player2Page = await player2Context.newPage();
+    const player3Page = await player3Context.newPage();
+
+    try {
+      // Step 1: Host creates a room
+      await hostPage.goto(BASE_URL);
+      await hostPage.click('text=Criar Sala');
+      await hostPage.fill('input[placeholder="Digite seu nome"]', 'Host Player');
+      await hostPage.click('button:has-text("Criar")');
+      
+      await hostPage.waitForURL(/\/room\/[A-Z0-9]{4}/);
+      const roomUrl = hostPage.url();
+      const roomCode = roomUrl.split('/').pop()?.toUpperCase() || '';
+
+      // Step 2: Join 2 players
+      await joinPlayerToRoom(player2Page, 'Player 2', roomCode);
+      await joinPlayerToRoom(player3Page, 'Player 3', roomCode);
+
+      // Step 3: Wait for all players
+      await hostPage.waitForSelector('text=Host Player', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 2', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 3', { timeout: 15000 });
+      await hostPage.waitForTimeout(2000);
+
+      // Step 4: Start the game
+      const startButton = hostPage.locator('button:has-text("Iniciar Partida")');
+      await expect(startButton).toBeEnabled({ timeout: 5000 });
+      await startButton.click();
+
+      // Wait for game to start
+      await hostPage.waitForFunction(
+        () => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const startBtn = buttons.find(btn => btn.textContent?.includes('Iniciar Partida'));
+          const restartBtn = buttons.find(btn => btn.textContent?.includes('Reiniciar Rodada'));
+          return !startBtn && restartBtn !== undefined;
+        },
+        { timeout: 15000 }
+      );
+
+      // Wait for all players to receive game state
+      await Promise.all([
+        hostPage.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 }),
+        player2Page.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 }),
+        player3Page.waitForSelector('text=/Rodada \\d+/', { timeout: 20000 })
+      ]);
+
+      await hostPage.waitForTimeout(1000);
+
+      // Step 5: Verify starting player indicator is visible
+      const startingPlayerIndicator = hostPage.locator('text=/começa esta rodada/');
+      await expect(startingPlayerIndicator).toBeVisible({ timeout: 5000 });
+
+      // Step 6: Verify starting player name is displayed
+      const startingPlayerText = await startingPlayerIndicator.textContent();
+      expect(startingPlayerText).toMatch(/começa esta rodada/);
+      
+      // The starting player should be one of the three players
+      const hasHostName = startingPlayerText?.includes('Host Player');
+      const hasPlayer2Name = startingPlayerText?.includes('Player 2');
+      const hasPlayer3Name = startingPlayerText?.includes('Player 3');
+      expect(hasHostName || hasPlayer2Name || hasPlayer3Name).toBe(true);
+
+      // Step 7: Verify starting player has star icon in player list
+      const playerList = hostPage.locator('text=Jogadores').locator('..').locator('..');
+      const starIcons = playerList.locator('svg[class*="Star"]');
+      const starCount = await starIcons.count();
+      expect(starCount).toBe(1); // Exactly one star icon
+
+      // Step 8: Verify all players see the same starting player
+      const hostStartingText = await hostPage.locator('text=/começa esta rodada/').textContent();
+      const player2StartingText = await player2Page.locator('text=/começa esta rodada/').textContent();
+      const player3StartingText = await player3Page.locator('text=/começa esta rodada/').textContent();
+
+      // Extract player names from the text
+      const extractPlayerName = (text: string | null) => {
+        if (!text) return '';
+        const match = text.match(/(.+?)\s+começa/);
+        return match ? match[1].trim() : '';
+      };
+
+      const hostStartingName = extractPlayerName(hostStartingText);
+      const player2StartingName = extractPlayerName(player2StartingText);
+      const player3StartingName = extractPlayerName(player3StartingText);
+
+      // All players should see the same starting player
+      expect(hostStartingName).toBe(player2StartingName);
+      expect(player2StartingName).toBe(player3StartingName);
+      expect(hostStartingName).toBeTruthy();
+
+    } finally {
+      await hostContext.close();
+      await player2Context.close();
+      await player3Context.close();
+    }
+  });
+
+  test('should randomly select a new starting player when round restarts', async ({ browser }) => {
+    test.setTimeout(90000); // 1.5 minutes timeout
+    
+    const hostContext = await browser.newContext();
+    const player2Context = await browser.newContext();
+    const player3Context = await browser.newContext();
+
+    const hostPage = await hostContext.newPage();
+    const player2Page = await player2Context.newPage();
+    const player3Page = await player3Context.newPage();
+
+    try {
+      // Step 1: Host creates a room
+      await hostPage.goto(BASE_URL);
+      await hostPage.click('text=Criar Sala');
+      await hostPage.fill('input[placeholder="Digite seu nome"]', 'Host Player');
+      await hostPage.click('button:has-text("Criar")');
+      
+      await hostPage.waitForURL(/\/room\/[A-Z0-9]{4}/);
+      const roomUrl = hostPage.url();
+      const roomCode = roomUrl.split('/').pop()?.toUpperCase() || '';
+
+      // Step 2: Join 2 players
+      await joinPlayerToRoom(player2Page, 'Player 2', roomCode);
+      await joinPlayerToRoom(player3Page, 'Player 3', roomCode);
+
+      // Step 3: Wait for all players
+      await hostPage.waitForSelector('text=Host Player', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 2', { timeout: 15000 });
+      await hostPage.waitForSelector('text=Player 3', { timeout: 15000 });
+      await hostPage.waitForTimeout(2000);
+
+      // Step 4: Start the game
+      const startButton = hostPage.locator('button:has-text("Iniciar Partida")');
+      await expect(startButton).toBeEnabled({ timeout: 5000 });
+      await startButton.click();
+
+      // Wait for game to start
+      await hostPage.waitForFunction(
+        () => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const startBtn = buttons.find(btn => btn.textContent?.includes('Iniciar Partida'));
+          const restartBtn = buttons.find(btn => btn.textContent?.includes('Reiniciar Rodada'));
+          return !startBtn && restartBtn !== undefined;
+        },
+        { timeout: 15000 }
+      );
+
+      await hostPage.waitForTimeout(2000);
+
+      // Step 5: Get first starting player
+      const extractPlayerName = (text: string | null) => {
+        if (!text) return '';
+        const match = text.match(/(.+?)\s+começa/);
+        return match ? match[1].trim() : '';
+      };
+
+      const firstStartingText = await hostPage.locator('text=/começa esta rodada/').textContent();
+      const firstStartingPlayer = extractPlayerName(firstStartingText);
+      expect(firstStartingPlayer).toBeTruthy();
+
+      // Step 6: Restart the round
+      const restartButton = hostPage.locator('button:has-text("Reiniciar Rodada")');
+      await expect(restartButton).toBeVisible({ timeout: 10000 });
+      await restartButton.click();
+
+      // Wait for new round
+      await hostPage.waitForTimeout(3000);
+
+      // Step 7: Verify new starting player is displayed
+      await hostPage.waitForSelector('text=/começa esta rodada/', { timeout: 10000 });
+      const secondStartingText = await hostPage.locator('text=/começa esta rodada/').textContent();
+      const secondStartingPlayer = extractPlayerName(secondStartingText);
+      expect(secondStartingPlayer).toBeTruthy();
+
+      // Step 8: Verify it's a different player (with multiple rounds, it might be the same by chance)
+      // But we should verify the indicator updates correctly
+      const startingPlayerIndicator = hostPage.locator('text=/começa esta rodada/');
+      await expect(startingPlayerIndicator).toBeVisible({ timeout: 5000 });
+
+      // Step 9: Verify star icon is still present (exactly one)
+      const playerList = hostPage.locator('text=Jogadores').locator('..').locator('..');
+      const starIcons = playerList.locator('svg[class*="Star"]');
+      const starCount = await starIcons.count();
+      expect(starCount).toBe(1);
+
+    } finally {
+      await hostContext.close();
+      await player2Context.close();
+      await player3Context.close();
+    }
+  });
 });
 

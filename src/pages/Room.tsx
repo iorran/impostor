@@ -2,14 +2,16 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { PlayerCard } from "@/components/PlayerCard";
 import { WordReveal } from "@/components/WordReveal";
-import { Copy, LogOut, Play, RotateCcw, Users, Loader2 } from "lucide-react";
+import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useGame } from "@/hooks/useGame";
 
 type GameStatus = "lobby" | "in_progress";
+type GameMode = "normal" | "anonymous";
 
 interface Room {
   id: string;
@@ -20,12 +22,15 @@ interface Room {
   word: string | null;
   impostor_word: string | null;
   num_impostors: number;
+  game_mode: GameMode;
+  starting_player_id: string | null;
 }
 
 interface Player {
   id: string;
   name: string;
   is_host: boolean;
+  joined_at?: string;
 }
 
 interface PlayerWord {
@@ -90,6 +95,8 @@ const Room = () => {
     if (roomData.num_impostors) {
       setNumImpostors(roomData.num_impostors);
     }
+    // Initialize game_mode from room data or default to 'normal'
+    // (handled by realtime subscription)
   }, [code, navigate]);
 
   // Fetch players
@@ -196,6 +203,31 @@ const Room = () => {
     }
   }, [room?.id, fetchPlayers]);
 
+  // Check if current player was removed from the room
+  useEffect(() => {
+    // Only check if we have a room, current player ID, and players have been loaded
+    if (!room?.id || !currentPlayerId || isLoading) return;
+    
+    // If players list is empty but we have a room, wait for it to load
+    // (This prevents false positives during initial load)
+    if (players.length === 0) return;
+
+    const isPlayerStillInRoom = players.some(p => p.id === currentPlayerId);
+    
+    if (!isPlayerStillInRoom) {
+      // Player was removed from the room
+      console.log("Player was removed from room, redirecting to homepage");
+      toast.error("Você foi removido da sala");
+      
+      // Clear localStorage
+      localStorage.removeItem("playerId");
+      localStorage.removeItem("roomId");
+      
+      // Redirect to homepage
+      navigate("/");
+    }
+  }, [players, currentPlayerId, room?.id, isLoading, navigate]);
+
   // Fetch word when game starts or round changes
   useEffect(() => {
     if (room?.status === 'in_progress' && room?.round_number > 0) {
@@ -225,8 +257,8 @@ const Room = () => {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${room.id}` },
         (payload) => {
-          console.log("Room update:", payload);
-          if (payload.new) {
+          console.log("Room update:", payload.eventType, payload);
+          if (payload.eventType === 'UPDATE' && payload.new) {
             const newRoom = payload.new as Room;
             setRoom(newRoom);
             
@@ -245,9 +277,33 @@ const Room = () => {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
-        () => {
-          console.log("Players update");
-          fetchPlayers();
+        (payload) => {
+          console.log("Players update:", payload.eventType, payload);
+          
+          if (payload.eventType === 'INSERT' && payload.new) {
+            // New player joined - add to state
+            const newPlayer = payload.new as Player;
+            setPlayers(prev => {
+              // Check if player already exists to avoid duplicates
+              if (prev.some(p => p.id === newPlayer.id)) {
+                return prev;
+              }
+              // Add new player and sort by joined_at
+              return [...prev, newPlayer].sort((a, b) => 
+                new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
+              );
+            });
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            // Player updated - update in state
+            const updatedPlayer = payload.new as Player;
+            setPlayers(prev => 
+              prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
+            );
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            // Player removed - remove from state
+            const deletedPlayer = payload.old as Player;
+            setPlayers(prev => prev.filter(p => p.id !== deletedPlayer.id));
+          }
         }
       )
       .on(
@@ -266,9 +322,15 @@ const Room = () => {
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("Realtime subscription status:", status);
+        if (status === 'SUBSCRIBED') {
+          console.log("Successfully subscribed to room changes");
+        }
+      });
 
     return () => {
+      console.log("Cleaning up realtime subscription");
       supabase.removeChannel(roomChannel);
     };
   }, [room?.id, room?.status, fetchPlayers, fetchMyWord]);
@@ -334,6 +396,57 @@ const Room = () => {
     navigate("/");
   };
 
+  const handleRemovePlayer = async (playerIdToRemove: string) => {
+    // Prevent removing self or host
+    if (playerIdToRemove === currentPlayerId) {
+      toast.error("Você não pode remover a si mesmo");
+      return;
+    }
+
+    const playerToRemove = players.find(p => p.id === playerIdToRemove);
+    if (playerToRemove?.is_host) {
+      toast.error("Você não pode remover o host");
+      return;
+    }
+
+    if (!room?.id || !isHost) {
+      toast.error("Apenas o host pode remover jogadores");
+      return;
+    }
+
+    // Prevent removing players during game
+    if (room.status === 'in_progress') {
+      toast.error("Não é possível remover jogadores durante a partida");
+      return;
+    }
+
+    setIsActionLoading(true);
+
+    try {
+      const { error } = await supabase
+        .from('players')
+        .delete()
+        .eq('id', playerIdToRemove)
+        .eq('room_id', room.id);
+
+      if (error) {
+        console.error("Error removing player:", error);
+        toast.error("Erro ao remover jogador");
+        return;
+      }
+
+      toast.success(`${playerToRemove?.name || 'Jogador'} removido da sala`);
+      
+      // Realtime subscription will automatically update the players list
+      // No need to manually refetch - state will update from realtime event
+    } catch (error) {
+      console.error("Error removing player:", error);
+      toast.error("Erro ao remover jogador");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -394,6 +507,9 @@ const Room = () => {
                     name={player.name}
                     isHost={player.is_host}
                     isCurrentPlayer={player.id === currentPlayerId}
+                    playerId={player.id}
+                    canRemove={isHost && room.status === "lobby"}
+                    onRemove={handleRemovePlayer}
                   />
                 ))}
               </div>
@@ -426,6 +542,47 @@ const Room = () => {
                   <p className="text-xs text-center text-muted-foreground">
                     Máximo: {maxImpostors} impostor{maxImpostors !== 1 ? 'es' : ''} ({activePlayers.length} jogador{activePlayers.length !== 1 ? 'es' : ''})
                   </p>
+                </div>
+
+                <div className="space-y-3 pt-2 border-t border-border">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="game-mode" className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                        Modo Anônimo
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        Esconde cores e papéis dos jogadores
+                      </p>
+                    </div>
+                    <Switch
+                      id="game-mode"
+                      checked={room?.game_mode === 'anonymous'}
+                      onCheckedChange={async (checked) => {
+                        if (!room?.id || !isHost) return;
+                        
+                        const newMode: GameMode = checked ? 'anonymous' : 'normal';
+                        setIsActionLoading(true);
+                        
+                        try {
+                          const { error } = await supabase
+                            .from('rooms')
+                            .update({ game_mode: newMode })
+                            .eq('id', room.id);
+                          
+                          if (error) {
+                            console.error("Error updating game mode:", error);
+                            toast.error("Erro ao atualizar modo de jogo");
+                          }
+                        } catch (error) {
+                          console.error("Error updating game mode:", error);
+                          toast.error("Erro ao atualizar modo de jogo");
+                        } finally {
+                          setIsActionLoading(false);
+                        }
+                      }}
+                      disabled={isActionLoading || room?.status === 'in_progress'}
+                    />
+                  </div>
                 </div>
 
                 <Button
@@ -463,7 +620,26 @@ const Room = () => {
           <div className="max-w-md mx-auto space-y-6 animate-fade-in">
             {/* Word Reveal */}
             {myWord && (
-              <WordReveal word={myWord} isImpostor={isImpostor} />
+              <WordReveal 
+                word={myWord} 
+                isImpostor={isImpostor} 
+                isAnonymous={room?.game_mode === 'anonymous'} 
+              />
+            )}
+
+            {/* Starting Player Indicator */}
+            {room?.starting_player_id && (
+              <div className="bg-secondary border border-border p-4 rounded-lg">
+                <div className="flex items-center justify-center gap-2">
+                  <Star className="w-4 h-4 text-primary fill-primary" />
+                  <p className="text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      {players.find(p => p.id === room.starting_player_id)?.name || 'Jogador'}
+                    </span>
+                    {' '}começa esta rodada
+                  </p>
+                </div>
+              </div>
             )}
 
             {/* Player List (names only) */}
@@ -475,13 +651,18 @@ const Room = () => {
                 {players.map((player) => (
                   <div
                     key={player.id}
-                    className={`p-3 bg-secondary border border-border text-center ${
+                    className={`p-3 bg-secondary border border-border text-center relative ${
                       player.id === currentPlayerId ? "border-primary" : ""
+                    } ${
+                      room?.starting_player_id === player.id ? "border-primary/50" : ""
                     }`}
                   >
                     <span className="text-sm">
                       {player.name}
                     </span>
+                    {room?.starting_player_id === player.id && (
+                      <Star className="w-3 h-3 text-primary fill-primary absolute top-1 right-1" />
+                    )}
                   </div>
                 ))}
               </div>
