@@ -3,12 +3,14 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PlayerCard } from "@/components/PlayerCard";
 import { WordReveal } from "@/components/WordReveal";
 import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useGame } from "@/hooks/useGame";
+import type { WordCategory } from "@/hooks/useGame";
 
 type GameStatus = "lobby" | "in_progress";
 type GameMode = "normal" | "anonymous";
@@ -24,6 +26,7 @@ interface Room {
   num_impostors: number;
   game_mode: GameMode;
   starting_player_id: string | null;
+  word_category: WordCategory | null;
 }
 
 interface Player {
@@ -582,6 +585,61 @@ const Room = () => {
                       }}
                       disabled={isActionLoading || room?.status === 'in_progress'}
                     />
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-2 border-t border-border">
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="word-category" className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                      Categoria de Palavras
+                    </label>
+                    <Select
+                      value={room?.word_category || 'all'}
+                      onValueChange={async (value: WordCategory) => {
+                        if (!room?.id || !isHost) return;
+                        
+                        setIsActionLoading(true);
+                        try {
+                          const { error } = await supabase
+                            .from('rooms')
+                            .update({ word_category: value })
+                            .eq('id', room.id);
+                          
+                          if (error) {
+                            console.error("Error updating word category:", error);
+                            toast.error("Erro ao atualizar categoria");
+                          }
+                        } catch (error) {
+                          console.error("Error updating word category:", error);
+                          toast.error("Erro ao atualizar categoria");
+                        } finally {
+                          setIsActionLoading(false);
+                        }
+                      }}
+                      disabled={isActionLoading || room?.status === 'in_progress'}
+                    >
+                      <SelectTrigger id="word-category" className="w-full">
+                        <SelectValue placeholder="Selecione uma categoria" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas as Categorias</SelectItem>
+                        <SelectItem value="agua">Água/Mar</SelectItem>
+                        <SelectItem value="veiculos">Veículos/Transporte</SelectItem>
+                        <SelectItem value="casa">Casa/Construção</SelectItem>
+                        <SelectItem value="animais">Animais</SelectItem>
+                        <SelectItem value="natureza">Natureza</SelectItem>
+                        <SelectItem value="tecnologia">Tecnologia</SelectItem>
+                        <SelectItem value="corpo">Corpo Humano</SelectItem>
+                        <SelectItem value="comida">Comida</SelectItem>
+                        <SelectItem value="espaco">Espaço</SelectItem>
+                        <SelectItem value="livros">Livros/Educação</SelectItem>
+                        <SelectItem value="musica">Música</SelectItem>
+                        <SelectItem value="esportes">Esportes</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-center text-muted-foreground">
+                      Escolha a categoria de palavras para o jogo
+                    </p>
                   </div>
                 </div>
 
