@@ -1,65 +1,7 @@
 import { useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-
-// Word lists
-const CREWMATE_WORDS = [
-  "BANANA",
-  "ELEFANTE",
-  "COMPUTADOR",
-  "BICICLETA",
-  "OCEANO",
-  "MONTANHA",
-  "ESTRELA",
-  "LIVRO",
-  "MUSICA",
-  "SOL",
-  "ARVORE",
-  "CACHORRO",
-  "GATO",
-  "CARRO",
-  "CASA",
-  "ESCOLA",
-  "AMIGO",
-  "FAMILIA",
-  "VIAGEM",
-  "SONHO",
-];
-
-const IMPOSTOR_WORDS = [
-  "MAÇÃ",
-  "RINOCERONTE",
-  "TABLET",
-  "MOTOCICLETA",
-  "MAR",
-  "COLINA",
-  "LUA",
-  "REVISTA",
-  "SOM",
-  "LUA",
-  "FLOR",
-  "GALO",
-  "PEIXE",
-  "MOTO",
-  "APARTAMENTO",
-  "UNIVERSIDADE",
-  "COLEGA",
-  "PARENTE",
-  "FERIAS",
-  "META",
-];
-
-const getRandomWord = (words: string[]): string => {
-  return words[Math.floor(Math.random() * words.length)];
-};
-
-const getCrewmateWord = (): string => {
-  return getRandomWord(CREWMATE_WORDS);
-};
-
-const getImpostorWord = (): string => {
-  return getRandomWord(IMPOSTOR_WORDS);
-};
+import { getWordPair } from "@/services/wordService";
 
 const shuffleArray = <T,>(array: T[]): T[] => {
   const shuffled = [...array];
@@ -110,12 +52,10 @@ export const useGame = () => {
           );
         }
 
-        // Generate words
-        let crewmateWord = getCrewmateWord();
-        let impostorWord = getImpostorWord();
-        while (crewmateWord === impostorWord) {
-          impostorWord = getImpostorWord();
-        }
+        // Generate words using API service (returns similar words)
+        const wordPair = await getWordPair();
+        const crewmateWord = wordPair.crewmateWord;
+        const impostorWord = wordPair.impostorWord;
 
         // Shuffle players and select impostors
         // Use a more reliable method to ensure exactly numImpostors are selected
@@ -279,12 +219,10 @@ export const useGame = () => {
           numImpostors = playersData.length - 1;
         }
 
-        // Generate new words
-        let crewmateWord = getCrewmateWord();
-        let impostorWord = getImpostorWord();
-        while (crewmateWord === impostorWord) {
-          impostorWord = getImpostorWord();
-        }
+        // Generate new words using API service (returns similar words)
+        const wordPair = await getWordPair();
+        const crewmateWord = wordPair.crewmateWord;
+        const impostorWord = wordPair.impostorWord;
 
         // Shuffle players and select impostors
         // Use a more reliable method to ensure exactly numImpostors are selected
