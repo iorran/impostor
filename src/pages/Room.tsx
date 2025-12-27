@@ -511,7 +511,7 @@ const Room = () => {
                     isHost={player.is_host}
                     isCurrentPlayer={player.id === currentPlayerId}
                     playerId={player.id}
-                    canRemove={isHost}
+                    canRemove={isHost && !player.is_host}
                     onRemove={handleRemovePlayer}
                     canDelegate={isHost && !player.is_host}
                     onDelegate={handleDelegateHost}
