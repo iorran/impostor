@@ -176,12 +176,20 @@ const Room = () => {
   }, [room?.status]);
 
   // Fetch word when game starts (fallback if subscription misses the event)
+  // This also acts as a retry mechanism with a small delay to ensure words are available
   useEffect(() => {
-    const fetchMyWord = async () => {
-      if (!room?.id || !currentPlayerId || room.status !== 'in_progress' || room.round_number === 0) {
-        return;
-      }
+    if (!room?.id || !currentPlayerId || room.status !== 'in_progress' || room.round_number === 0) {
+      return;
+    }
 
+    // Add a small delay to ensure words are inserted in the database
+    // This helps when the subscription event arrives before the database commit completes
+    const delay = room.round_number > 0 ? 100 : 0; // Small delay for new rounds
+    
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let retryTimeoutId: ReturnType<typeof setTimeout>;
+    
+    timeoutId = setTimeout(async () => {
       try {
         const { data, error } = await supabase
           .from('player_words')
@@ -197,20 +205,41 @@ const Room = () => {
         }
 
         if (data && data.round_number === room.round_number) {
-          console.log("Fetched word from database:", data.word, "isImpostor:", data.is_impostor);
+          console.log("Fetched word from database (fallback):", data.word, "isImpostor:", data.is_impostor);
           setMyWord(data.word);
           setIsImpostor(data.is_impostor);
         } else {
-          console.log("No word found for current round, clearing state");
-          setMyWord(null);
-          setIsImpostor(false);
+          console.log("No word found for current round, will retry...");
+          // Retry once after a longer delay if word not found
+          retryTimeoutId = setTimeout(async () => {
+            const { data: retryData } = await supabase
+              .from('player_words')
+              .select('word, is_impostor, round_number')
+              .eq('room_id', room.id)
+              .eq('player_id', currentPlayerId)
+              .eq('round_number', room.round_number)
+              .maybeSingle();
+            
+            if (retryData && retryData.round_number === room.round_number) {
+              console.log("Fetched word on retry:", retryData.word);
+              setMyWord(retryData.word);
+              setIsImpostor(retryData.is_impostor);
+            } else {
+              console.log("No word found after retry, clearing state");
+              setMyWord(null);
+              setIsImpostor(false);
+            }
+          }, 500);
         }
       } catch (err) {
         console.error("Error in fetchMyWord:", err);
       }
-    };
+    }, delay);
 
-    fetchMyWord();
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (retryTimeoutId) clearTimeout(retryTimeoutId);
+    };
   }, [room?.id, room?.status, room?.round_number, currentPlayerId]);
 
   // Realtime subscriptions
@@ -366,29 +395,52 @@ const Room = () => {
           table: 'player_words', 
           filter: `room_id=eq.${room.id} AND player_id=eq.${currentPlayerId}` 
         },
-        (payload) => {
+        async (payload) => {
           console.log("Player words event:", payload.eventType, payload);
           const currentRoom = roomRef.current;
           
-          if (!currentRoom || currentRoom.status !== 'in_progress') {
-            return;
-          }
-
-          const handleWordUpdate = (wordData: PlayerWord & { round_number: number }) => {
-            if (wordData.round_number === currentRoom.round_number) {
-              console.log("Updating word for current round:", wordData.word);
+          // For INSERT events, always update if we have the data
+          // This handles the case where the word is assigned when game starts
+          if (payload.eventType === 'INSERT' && payload.new) {
+            const wordData = payload.new as PlayerWord & { round_number: number };
+            console.log("INSERT word event received:", wordData);
+            
+            // If room is in progress, update immediately
+            // We'll verify round_number matches, but also fetch if there's a mismatch
+            if (currentRoom?.status === 'in_progress') {
+              if (wordData.round_number === currentRoom.round_number) {
+                console.log("Updating word for current round (INSERT):", wordData.word);
+                setMyWord(wordData.word);
+                setIsImpostor(wordData.is_impostor);
+              } else {
+                // Round mismatch - fetch the correct word for current round
+                console.log("Round mismatch, fetching word for round:", currentRoom.round_number);
+                const { data } = await supabase
+                  .from('player_words')
+                  .select('word, is_impostor, round_number')
+                  .eq('room_id', room.id)
+                  .eq('player_id', currentPlayerId)
+                  .eq('round_number', currentRoom.round_number)
+                  .maybeSingle();
+                
+                if (data) {
+                  console.log("Fetched word after round mismatch:", data.word);
+                  setMyWord(data.word);
+                  setIsImpostor(data.is_impostor);
+                }
+              }
+            }
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            const wordData = payload.new as PlayerWord & { round_number: number };
+            if (currentRoom?.status === 'in_progress' && wordData.round_number === currentRoom.round_number) {
+              console.log("Updating word for current round (UPDATE):", wordData.word);
               setMyWord(wordData.word);
               setIsImpostor(wordData.is_impostor);
             }
-          };
-
-          if (payload.eventType === 'INSERT' && payload.new) {
-            handleWordUpdate(payload.new as PlayerWord & { round_number: number });
-          } else if (payload.eventType === 'UPDATE' && payload.new) {
-            handleWordUpdate(payload.new as PlayerWord & { round_number: number });
           } else if (payload.eventType === 'DELETE' && payload.old) {
             const deletedWord = payload.old as PlayerWord & { round_number: number };
-            if (deletedWord.round_number === currentRoom.round_number) {
+            if (currentRoom && deletedWord.round_number === currentRoom.round_number) {
+              console.log("Word deleted for current round");
               setMyWord(null);
               setIsImpostor(false);
             }
