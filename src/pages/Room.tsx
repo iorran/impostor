@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PlayerCard } from "@/components/PlayerCard";
 import { WordReveal } from "@/components/WordReveal";
-import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star } from "lucide-react";
+import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useGame } from "@/hooks/useGame";
@@ -265,6 +265,16 @@ const Room = () => {
     toast.success("Código copiado!");
   };
 
+  const shareViaWhatsApp = () => {
+    if (!code) return;
+    
+    const roomUrl = `${window.location.origin}/${code}`;
+    const message = `🎮 Entre na minha sala do Jogo do Impostor!\n\nCódigo da sala: ${code}\n\nLink: ${roomUrl}`;
+    const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
+    
+    window.open(whatsappUrl, '_blank');
+  };
+
   const handleStartGame = async () => {
     if (!room?.id || !currentPlayerId || !canStart) return;
     
@@ -472,13 +482,26 @@ const Room = () => {
             Sair
           </Button>
           
-          <button
-            onClick={copyRoomCode}
-            className="flex items-center gap-2 px-4 py-2 bg-secondary border border-border hover:border-primary transition-colors"
-          >
-            <span className="room-code text-xl">{code}</span>
-            <Copy className="w-4 h-4 text-muted-foreground" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={copyRoomCode}
+              className="flex items-center gap-2 px-4 py-2 bg-secondary border border-border hover:border-primary transition-colors"
+            >
+              <span className="room-code text-xl">{code}</span>
+              <Copy className="w-4 h-4 text-muted-foreground" />
+            </button>
+            
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={shareViaWhatsApp}
+              className="h-10 w-10 text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950"
+              aria-label="Compartilhar via WhatsApp"
+              title="Compartilhar via WhatsApp"
+            >
+              <MessageCircle className="w-5 h-5" />
+            </Button>
+          </div>
           
           <div className="flex items-center gap-2 text-muted-foreground">
             <Users className="w-4 h-4" />
