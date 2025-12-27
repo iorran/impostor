@@ -52,7 +52,6 @@ const Room = () => {
   const [isImpostor, setIsImpostor] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isActionLoading, setIsActionLoading] = useState(false);
-  const [numImpostors, setNumImpostors] = useState<number>(1);
   const roomRef = useRef<Room | null>(null);
   
   // Keep roomRef in sync with room state
@@ -65,15 +64,11 @@ const Room = () => {
   const currentPlayer = players.find(p => p.id === currentPlayerId);
   const isHost = currentPlayer?.is_host ?? false;
   const activePlayers = players.filter(p => !p.is_host || p.id === currentPlayerId);
-  const canStart = activePlayers.length >= 3; // Minimum 3 players needed
-  const maxImpostors = activePlayers.length > 0 ? Math.min(activePlayers.length - 1, Math.max(1, Math.floor(activePlayers.length / 2))) : 1; // Max half of players, but at least 1 less than total
+  const canStart = activePlayers.length >= 3;
+  const maxImpostors = activePlayers.length > 0 ? Math.min(activePlayers.length - 1, Math.max(1, Math.floor(activePlayers.length / 2))) : 1;
   
-  // Update numImpostors if it exceeds the new max
-  useEffect(() => {
-    if (activePlayers.length > 0 && numImpostors > maxImpostors) {
-      setNumImpostors(maxImpostors);
-    }
-  }, [maxImpostors, activePlayers.length, numImpostors]);
+  // Derive numImpostors from room state (realtime)
+  const numImpostors = room?.num_impostors ?? 1;
 
   // Fetch room data
   const fetchRoom = useCallback(async () => {
@@ -99,59 +94,52 @@ const Room = () => {
     
     const roomData = data as Room;
     setRoom(roomData);
-    // Initialize numImpostors from room data or default to 1
-    if (roomData.num_impostors) {
-      setNumImpostors(roomData.num_impostors);
-    }
-    // Initialize game_mode from room data or default to 'normal'
-    // (handled by realtime subscription)
   }, [code, navigate]);
 
-  // Fetch players
-  const fetchPlayers = useCallback(async () => {
-    if (!room?.id) return;
-    
-    const { data, error } = await supabase
-      .from('players')
-      .select('*')
-      .eq('room_id', room.id)
-      .order('joined_at', { ascending: true });
-    
-    if (error) {
-      console.error("Error fetching players:", error);
-      return;
-    }
-    
-    setPlayers(data as Player[]);
-  }, [room?.id]);
+  // Helper function to sort players by joined_at
+  const sortPlayersByJoinedAt = (playersList: Player[]): Player[] => {
+    return [...playersList].sort((a, b) => 
+      new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
+    );
+  };
 
-  // Words are now updated via realtime subscription - no need for fetchMyWord
-
-  // Initial load
+  // Initial load - fetch room and players once
   useEffect(() => {
     const init = async () => {
+      if (!code) return;
+      
       setIsLoading(true);
+      
+      // Fetch room
       await fetchRoom();
+      
+      // Fetch initial players list (subscription will handle updates)
+      const { data: roomData } = await supabase
+        .from('rooms')
+        .select('id')
+        .eq('code', code.toUpperCase())
+        .maybeSingle();
+      
+      if (roomData?.id) {
+        const { data: playersData, error } = await supabase
+          .from('players')
+          .select('*')
+          .eq('room_id', roomData.id)
+          .order('joined_at', { ascending: true });
+        
+        if (!error && playersData) {
+          setPlayers(playersData as Player[]);
+        }
+      }
+      
       setIsLoading(false);
     };
     init();
-  }, [fetchRoom]);
-
-  // Fetch players when room changes
-  useEffect(() => {
-    if (room?.id) {
-      fetchPlayers();
-    }
-  }, [room?.id, fetchPlayers]);
+  }, [code, fetchRoom]);
 
   // Check if current player was removed from the room
   useEffect(() => {
-    // Only check if we have a room, current player ID, and players have been loaded
-    if (!room?.id || !currentPlayerId || isLoading) return;
-    
-    // If players list is empty but we have a room, wait for it to load
-    // (This prevents false positives during initial load)
-    if (players.length === 0) return;
+    if (!room?.id || !currentPlayerId || isLoading || players.length === 0) return;
 
     const isPlayerStillInRoom = players.some(p => p.id === currentPlayerId);
     
@@ -170,11 +158,8 @@ const Room = () => {
   }, [players, currentPlayerId, room?.id, isLoading, navigate]);
 
   // Clear word when game returns to lobby
-  // Real-time subscription handles word updates during game
   useEffect(() => {
     if (room?.status === 'lobby') {
-      // Only clear words if game is definitely in lobby
-      // Don't clear during transitions or if status is temporarily undefined
       setMyWord(null);
       setIsImpostor(false);
     }
@@ -190,15 +175,12 @@ const Room = () => {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${room.id}` },
         (payload) => {
-          console.log("Room update:", payload.eventType, payload);
           if (payload.eventType === 'UPDATE' && payload.new) {
             const newRoom = payload.new as Room;
             setRoom(newRoom);
             
-            // If round_number changed and game is in progress, clear word state
-            // The player_words subscription will update it in real-time
+            // Clear word state when round changes (player_words subscription will update it)
             if (newRoom.status === 'in_progress' && newRoom.round_number > 0) {
-              // Clear current word - will be updated by player_words subscription
               setMyWord(null);
               setIsImpostor(false);
             }
@@ -209,33 +191,22 @@ const Room = () => {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
         (payload) => {
-          console.log("Players update:", payload.eventType, payload);
-          
           if (payload.eventType === 'INSERT' && payload.new) {
-            // New player joined - add to state
             const newPlayer = payload.new as Player;
             setPlayers(prev => {
-              // Check if player already exists to avoid duplicates
               if (prev.some(p => p.id === newPlayer.id)) {
-                return prev;
+                return prev; // Avoid duplicates
               }
-              // Add new player and sort by joined_at
-              return [...prev, newPlayer].sort((a, b) => 
-                new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
-              );
+              return sortPlayersByJoinedAt([...prev, newPlayer]);
             });
           } else if (payload.eventType === 'UPDATE' && payload.new) {
-            // Player updated - update in state and maintain sort order
             const updatedPlayer = payload.new as Player;
-            setPlayers(prev => {
-              const updated = prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
-              // Maintain sort by joined_at
-              return updated.sort((a, b) => 
-                new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
-              );
-            });
+            setPlayers(prev => 
+              sortPlayersByJoinedAt(
+                prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
+              )
+            );
           } else if (payload.eventType === 'DELETE' && payload.old) {
-            // Player removed - remove from state
             const deletedPlayer = payload.old as Player;
             setPlayers(prev => prev.filter(p => p.id !== deletedPlayer.id));
           }
@@ -250,50 +221,28 @@ const Room = () => {
           filter: `room_id=eq.${room.id} AND player_id=eq.${currentPlayerId}` 
         },
         (payload) => {
-          console.log("Player words update:", payload.eventType, payload);
-          
-          // Get current room state from ref to avoid closure issues
           const currentRoom = roomRef.current;
           
-          // Only process if game is in progress
           if (!currentRoom || currentRoom.status !== 'in_progress') {
             return;
           }
 
+          const handleWordUpdate = (wordData: PlayerWord & { round_number: number }) => {
+            if (wordData.round_number === currentRoom.round_number) {
+              setMyWord(wordData.word);
+              setIsImpostor(wordData.is_impostor);
+            }
+          };
+
           if (payload.eventType === 'INSERT' && payload.new) {
-            const newWord = payload.new as PlayerWord & { round_number: number };
-            
-            // Verify round number matches current round
-            if (newWord.round_number === currentRoom.round_number) {
-              setMyWord(newWord.word);
-              setIsImpostor(newWord.is_impostor);
-              console.log("Word updated from realtime INSERT:", newWord.word);
-            } else {
-              console.log(
-                `Word INSERT for different round: ${newWord.round_number} vs ${currentRoom.round_number}`
-              );
-            }
+            handleWordUpdate(payload.new as PlayerWord & { round_number: number });
           } else if (payload.eventType === 'UPDATE' && payload.new) {
-            const updatedWord = payload.new as PlayerWord & { round_number: number };
-            
-            // Verify round number matches current round
-            if (updatedWord.round_number === currentRoom.round_number) {
-              setMyWord(updatedWord.word);
-              setIsImpostor(updatedWord.is_impostor);
-              console.log("Word updated from realtime UPDATE:", updatedWord.word);
-            } else {
-              console.log(
-                `Word UPDATE for different round: ${updatedWord.round_number} vs ${currentRoom.round_number}`
-              );
-            }
+            handleWordUpdate(payload.new as PlayerWord & { round_number: number });
           } else if (payload.eventType === 'DELETE' && payload.old) {
             const deletedWord = payload.old as PlayerWord & { round_number: number };
-            
-            // Only clear if it's for the current round
             if (deletedWord.round_number === currentRoom.round_number) {
               setMyWord(null);
               setIsImpostor(false);
-              console.log("Word cleared from realtime DELETE");
             }
           }
         }
@@ -328,7 +277,7 @@ const Room = () => {
     
     try {
       await startGame(room.id, currentPlayerId, numImpostors);
-      await fetchRoom();
+      // Room will be updated automatically via realtime subscription
     } catch (error) {
       // Error is already handled in the hook
     } finally {
@@ -343,9 +292,7 @@ const Room = () => {
     
     try {
       await resetGame(room.id, currentPlayerId);
-      // Refresh room data to get updated round_number
-      await fetchRoom();
-      // Word will be updated automatically via real-time subscription
+      // Room and words will be updated automatically via realtime subscriptions
     } catch (error) {
       // Error is already handled in the hook
     } finally {
@@ -429,9 +376,6 @@ const Room = () => {
       }
 
       toast.success(`${playerToRemove.name} removido da sala`);
-      
-      // Realtime subscription will automatically update the players list
-      // No need to manually refetch - state will update from realtime event
     } catch (error) {
       console.error("Error removing player:", error);
       toast.error("Erro ao remover jogador");
@@ -498,8 +442,6 @@ const Room = () => {
       }
 
       toast.success(`${newHost.name} é agora o host`);
-      
-      // Realtime subscription will automatically update the players list
     } catch (error) {
       console.error("Error delegating host:", error);
       toast.error("Erro ao delegar host");
@@ -593,10 +535,14 @@ const Room = () => {
                     min={1}
                     max={maxImpostors}
                     value={numImpostors}
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const value = parseInt(e.target.value, 10);
-                      if (!isNaN(value) && value >= 1 && value <= maxImpostors) {
-                        setNumImpostors(value);
+                      if (!isNaN(value) && value >= 1 && value <= maxImpostors && room?.id) {
+                        // Update room in realtime - subscription will update state automatically
+                        await supabase
+                          .from('rooms')
+                          .update({ num_impostors: value })
+                          .eq('id', room.id);
                       }
                     }}
                     disabled={!canStart || isActionLoading}
