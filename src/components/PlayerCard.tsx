@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Crown, User, X } from "lucide-react";
+import { Crown, User, X, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface PlayerCardProps {
@@ -9,6 +9,8 @@ interface PlayerCardProps {
   playerId: string;
   canRemove?: boolean;
   onRemove?: (playerId: string) => void;
+  canDelegate?: boolean;
+  onDelegate?: (playerId: string) => void;
 }
 
 export function PlayerCard({ 
@@ -17,11 +19,19 @@ export function PlayerCard({
   isCurrentPlayer, 
   playerId,
   canRemove = false,
-  onRemove 
+  onRemove,
+  canDelegate = false,
+  onDelegate
 }: PlayerCardProps) {
   const handleRemove = () => {
-    if (onRemove && !isHost) {
+    if (onRemove) {
       onRemove(playerId);
+    }
+  };
+
+  const handleDelegate = () => {
+    if (onDelegate && !isHost) {
+      onDelegate(playerId);
     }
   };
 
@@ -57,17 +67,32 @@ export function PlayerCard({
         </span>
       )}
 
-      {canRemove && !isHost && onRemove && (
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handleRemove}
-          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-          aria-label={`Remover ${name}`}
-        >
-          <X className="w-4 h-4" />
-        </Button>
-      )}
+      <div className="flex items-center gap-1">
+        {canDelegate && !isHost && onDelegate && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleDelegate}
+            className="h-8 w-8 text-primary hover:text-primary hover:bg-primary/10"
+            aria-label={`Tornar ${name} host`}
+            title="Tornar host"
+          >
+            <UserCog className="w-4 h-4" />
+          </Button>
+        )}
+        {canRemove && onRemove && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleRemove}
+            className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+            aria-label={`Remover ${name}`}
+            title="Remover jogador"
+          >
+            <X className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
