@@ -176,69 +176,72 @@ const Room = () => {
   }, [room?.status]);
 
   // Fetch word when game starts (fallback if subscription misses the event)
-  // This also acts as a retry mechanism with a small delay to ensure words are available
+  // This also acts as a retry mechanism with multiple attempts to ensure words are available
   useEffect(() => {
     if (!room?.id || !currentPlayerId || room.status !== 'in_progress' || room.round_number === 0) {
       return;
     }
 
-    // Add a small delay to ensure words are inserted in the database
-    // This helps when the subscription event arrives before the database commit completes
-    const delay = room.round_number > 0 ? 100 : 0; // Small delay for new rounds
+    console.log("Fetching word for round:", room.round_number);
     
-    let timeoutId: ReturnType<typeof setTimeout>;
-    let retryTimeoutId: ReturnType<typeof setTimeout>;
+    let timeoutIds: ReturnType<typeof setTimeout>[] = [];
     
-    timeoutId = setTimeout(async () => {
-      try {
-        const { data, error } = await supabase
-          .from('player_words')
-          .select('word, is_impostor, round_number')
-          .eq('room_id', room.id)
-          .eq('player_id', currentPlayerId)
-          .eq('round_number', room.round_number)
-          .maybeSingle();
+    // Function to fetch word with retry logic
+    const fetchWordWithRetry = async (attempt: number, delay: number) => {
+      const timeoutId = setTimeout(async () => {
+        try {
+          const { data, error } = await supabase
+            .from('player_words')
+            .select('word, is_impostor, round_number')
+            .eq('room_id', room.id)
+            .eq('player_id', currentPlayerId)
+            .eq('round_number', room.round_number)
+            .maybeSingle();
 
-        if (error) {
-          console.error("Error fetching player word:", error);
-          return;
-        }
+          if (error) {
+            console.error(`Error fetching player word (attempt ${attempt}):`, error);
+            // Retry on error
+            if (attempt < 5) {
+              fetchWordWithRetry(attempt + 1, delay * 1.5);
+            }
+            return;
+          }
 
-        if (data && data.round_number === room.round_number) {
-          console.log("Fetched word from database (fallback):", data.word, "isImpostor:", data.is_impostor);
-          setMyWord(data.word);
-          setIsImpostor(data.is_impostor);
-        } else {
-          console.log("No word found for current round, will retry...");
-          // Retry once after a longer delay if word not found
-          retryTimeoutId = setTimeout(async () => {
-            const { data: retryData } = await supabase
-              .from('player_words')
-              .select('word, is_impostor, round_number')
-              .eq('room_id', room.id)
-              .eq('player_id', currentPlayerId)
-              .eq('round_number', room.round_number)
-              .maybeSingle();
-            
-            if (retryData && retryData.round_number === room.round_number) {
-              console.log("Fetched word on retry:", retryData.word);
-              setMyWord(retryData.word);
-              setIsImpostor(retryData.is_impostor);
+          if (data && data.round_number === room.round_number) {
+            console.log(`Fetched word from database (attempt ${attempt}):`, data.word, "isImpostor:", data.is_impostor);
+            setMyWord(data.word);
+            setIsImpostor(data.is_impostor);
+          } else {
+            console.log(`No word found for round ${room.round_number} (attempt ${attempt}), will retry...`);
+            // Retry with exponential backoff
+            if (attempt < 5) {
+              fetchWordWithRetry(attempt + 1, delay * 1.5);
             } else {
-              console.log("No word found after retry, clearing state");
+              console.log("Max retries reached, clearing state");
               setMyWord(null);
               setIsImpostor(false);
             }
-          }, 500);
+          }
+        } catch (err) {
+          console.error(`Error in fetchMyWord (attempt ${attempt}):`, err);
+          // Retry on exception
+          if (attempt < 5) {
+            fetchWordWithRetry(attempt + 1, delay * 1.5);
+          }
         }
-      } catch (err) {
-        console.error("Error in fetchMyWord:", err);
-      }
-    }, delay);
+      }, delay);
+      
+      timeoutIds.push(timeoutId);
+    };
+
+    // Start fetching with initial delay of 300ms, then retry with exponential backoff
+    // This gives more time for words to be inserted in the database
+    // Attempts: 300ms, 450ms, 675ms, 1012ms, 1518ms
+    fetchWordWithRetry(1, 300);
 
     return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (retryTimeoutId) clearTimeout(retryTimeoutId);
+      timeoutIds.forEach(id => clearTimeout(id));
+      timeoutIds = [];
     };
   }, [room?.id, room?.status, room?.round_number, currentPlayerId]);
 
@@ -262,15 +265,48 @@ const Room = () => {
           table: 'rooms', 
           filter: `id=eq.${room.id}` 
         },
-        (payload) => {
+        async (payload) => {
           console.log("Room subscription event received:", payload.eventType, payload);
           if (payload.eventType === 'UPDATE' && payload.new) {
             const newRoom = payload.new as Room;
             console.log("Room updated via realtime:", newRoom);
+            const oldRoundNumber = roomRef.current?.round_number || 0;
             setRoom(newRoom);
             
-            // Clear word state when round changes (player_words subscription will update it)
-            if (newRoom.status === 'in_progress' && newRoom.round_number > 0) {
+            // When a new round starts, clear word state and try to fetch it with multiple attempts
+            if (newRoom.status === 'in_progress' && newRoom.round_number > 0 && newRoom.round_number !== oldRoundNumber) {
+              console.log("New round detected:", newRoom.round_number, "Clearing word state and fetching...");
+              setMyWord(null);
+              setIsImpostor(false);
+              
+              // Try to fetch the word multiple times with increasing delays
+              // This accounts for the fact that words are inserted AFTER the room update
+              const fetchAttempts = [300, 600, 1000, 1500, 2000]; // ms delays
+              
+              fetchAttempts.forEach((delay, index) => {
+                setTimeout(async () => {
+                  // Check if word was already set (from subscription or previous attempt)
+                  if (roomRef.current && roomRef.current.round_number === newRoom.round_number) {
+                    const { data } = await supabase
+                      .from('player_words')
+                      .select('word, is_impostor, round_number')
+                      .eq('room_id', room.id)
+                      .eq('player_id', currentPlayerId)
+                      .eq('round_number', newRoom.round_number)
+                      .maybeSingle();
+                    
+                    if (data && data.round_number === newRoom.round_number) {
+                      console.log(`Fetched word after round change (attempt ${index + 1}, delay ${delay}ms):`, data.word);
+                      setMyWord(data.word);
+                      setIsImpostor(data.is_impostor);
+                    } else if (index === fetchAttempts.length - 1) {
+                      console.log("All fetch attempts failed for new round");
+                    }
+                  }
+                }, delay);
+              });
+            } else if (newRoom.status === 'in_progress' && newRoom.round_number > 0) {
+              // Same round but status changed - just clear (fallback will fetch)
               setMyWord(null);
               setIsImpostor(false);
             }
@@ -403,31 +439,51 @@ const Room = () => {
           // This handles the case where the word is assigned when game starts
           if (payload.eventType === 'INSERT' && payload.new) {
             const wordData = payload.new as PlayerWord & { round_number: number };
-            console.log("INSERT word event received:", wordData);
+            console.log("INSERT word event received:", wordData, "Current room round:", currentRoom?.round_number);
             
-            // If room is in progress, update immediately
-            // We'll verify round_number matches, but also fetch if there's a mismatch
+            // Always update if room is in progress
             if (currentRoom?.status === 'in_progress') {
+              // Check if this word is for the current round
               if (wordData.round_number === currentRoom.round_number) {
                 console.log("Updating word for current round (INSERT):", wordData.word);
                 setMyWord(wordData.word);
                 setIsImpostor(wordData.is_impostor);
               } else {
-                // Round mismatch - fetch the correct word for current round
-                console.log("Round mismatch, fetching word for round:", currentRoom.round_number);
-                const { data } = await supabase
-                  .from('player_words')
-                  .select('word, is_impostor, round_number')
-                  .eq('room_id', room.id)
-                  .eq('player_id', currentPlayerId)
-                  .eq('round_number', currentRoom.round_number)
-                  .maybeSingle();
+                // Round mismatch - this might be an old word or future word
+                // Fetch the correct word for current round with retries
+                console.log("Round mismatch (INSERT), word round:", wordData.round_number, "current round:", currentRoom.round_number);
+                console.log("Fetching word for current round:", currentRoom.round_number);
                 
-                if (data) {
-                  console.log("Fetched word after round mismatch:", data.word);
-                  setMyWord(data.word);
-                  setIsImpostor(data.is_impostor);
-                }
+                // Try multiple times with delays to ensure we get the word
+                const fetchWithRetry = async (retries: number) => {
+                  for (let i = 0; i < retries; i++) {
+                    await new Promise(resolve => setTimeout(resolve, 200 * (i + 1)));
+                    const { data } = await supabase
+                      .from('player_words')
+                      .select('word, is_impostor, round_number')
+                      .eq('room_id', room.id)
+                      .eq('player_id', currentPlayerId)
+                      .eq('round_number', currentRoom.round_number)
+                      .maybeSingle();
+                    
+                    if (data && data.round_number === currentRoom.round_number) {
+                      console.log(`Fetched word after round mismatch (INSERT, attempt ${i + 1}):`, data.word);
+                      setMyWord(data.word);
+                      setIsImpostor(data.is_impostor);
+                      return;
+                    }
+                  }
+                  console.log("Could not fetch word after round mismatch, will rely on fallback");
+                };
+                fetchWithRetry(5);
+              }
+            } else {
+              // Room not in progress, but we got an INSERT - might be preparing for next round
+              console.log("INSERT received but room not in progress, storing word:", wordData.word);
+              // Still update if it's for a future round we might be starting
+              if (wordData.round_number > 0) {
+                setMyWord(wordData.word);
+                setIsImpostor(wordData.is_impostor);
               }
             }
           } else if (payload.eventType === 'UPDATE' && payload.new) {
