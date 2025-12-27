@@ -53,7 +53,6 @@ const Room = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [numImpostors, setNumImpostors] = useState<number>(1);
-  const isFetchingWordRef = useRef(false);
   const roomRef = useRef<Room | null>(null);
   
   // Keep roomRef in sync with room state
@@ -126,74 +125,7 @@ const Room = () => {
     setPlayers(data as Player[]);
   }, [room?.id]);
 
-  // Fetch my word
-  const fetchMyWord = useCallback(async (force = false) => {
-    if (!room?.id || !currentPlayerId) {
-      return;
-    }
-    
-    // Prevent multiple simultaneous fetches, unless forced
-    if (isFetchingWordRef.current && !force) {
-      return;
-    }
-    
-    // Only clear words if game is not in progress
-    if (room.status !== 'in_progress') {
-      setMyWord(null);
-      setIsImpostor(false);
-      return;
-    }
-    
-    isFetchingWordRef.current = true;
-    
-    // Try to fetch word for current round, with retry logic
-    const fetchWord = async (attempt = 0): Promise<void> => {
-      // Fetch all words for this player in this room to check for duplicates
-      const { data: allWords, error: allError } = await supabase
-        .from('player_words')
-        .select('*')
-        .eq('room_id', room.id)
-        .eq('player_id', currentPlayerId);
-      
-      if (allError) {
-        console.error("Error fetching all words:", allError);
-        isFetchingWordRef.current = false;
-        return;
-      }
-      
-      // Filter for current round and check for duplicates
-      const currentRoundWords = allWords?.filter(
-        (pw: any) => pw.round_number === room.round_number
-      ) || [];
-      
-      if (currentRoundWords.length > 1) {
-        console.warn(
-          `Multiple words found for round ${room.round_number}:`,
-          currentRoundWords
-        );
-        // Use the first one, but log the issue
-      }
-      
-      const playerWord = currentRoundWords[0] as PlayerWord | undefined;
-      
-      if (playerWord) {
-        setMyWord(playerWord.word);
-        setIsImpostor(playerWord.is_impostor);
-        isFetchingWordRef.current = false;
-      } else if (attempt < 5) {
-        // Retry after a short delay if word not found (might still be inserting)
-        setTimeout(() => fetchWord(attempt + 1), 300 * (attempt + 1));
-      } else {
-        // After 5 attempts, log warning
-        console.warn(
-          `Word not found after retries for round ${room.round_number}`
-        );
-        isFetchingWordRef.current = false;
-      }
-    };
-    
-    await fetchWord();
-  }, [room?.id, room?.round_number, room?.status, currentPlayerId]);
+  // Words are now updated via realtime subscription - no need for fetchMyWord
 
   // Initial load
   useEffect(() => {
@@ -293,11 +225,15 @@ const Room = () => {
               );
             });
           } else if (payload.eventType === 'UPDATE' && payload.new) {
-            // Player updated - update in state
+            // Player updated - update in state and maintain sort order
             const updatedPlayer = payload.new as Player;
-            setPlayers(prev => 
-              prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
-            );
+            setPlayers(prev => {
+              const updated = prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
+              // Maintain sort by joined_at
+              return updated.sort((a, b) => 
+                new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
+              );
+            });
           } else if (payload.eventType === 'DELETE' && payload.old) {
             // Player removed - remove from state
             const deletedPlayer = payload.old as Player;
@@ -373,7 +309,7 @@ const Room = () => {
       console.log("Cleaning up realtime subscription");
       supabase.removeChannel(roomChannel);
     };
-  }, [room?.id, room?.status, room?.round_number, currentPlayerId, fetchPlayers]);
+  }, [room?.id, room?.status, room?.round_number, currentPlayerId]);
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(code || "");
@@ -404,8 +340,6 @@ const Room = () => {
     if (!room?.id || !currentPlayerId) return;
     
     setIsActionLoading(true);
-    // Reset the fetching flag to allow new fetch
-    isFetchingWordRef.current = false;
     
     try {
       await resetGame(room.id, currentPlayerId);
