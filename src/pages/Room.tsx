@@ -189,9 +189,10 @@ const Room = () => {
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
+        { event: 'INSERT', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
         (payload) => {
-          if (payload.eventType === 'INSERT' && payload.new) {
+          console.log("Player INSERT event:", payload);
+          if (payload.new) {
             const newPlayer = payload.new as Player;
             setPlayers(prev => {
               if (prev.some(p => p.id === newPlayer.id)) {
@@ -199,16 +200,52 @@ const Room = () => {
               }
               return sortPlayersByJoinedAt([...prev, newPlayer]);
             });
-          } else if (payload.eventType === 'UPDATE' && payload.new) {
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
+        (payload) => {
+          console.log("Player UPDATE event:", payload);
+          if (payload.new) {
             const updatedPlayer = payload.new as Player;
             setPlayers(prev => 
               sortPlayersByJoinedAt(
                 prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
               )
             );
-          } else if (payload.eventType === 'DELETE' && payload.old) {
-            const deletedPlayer = payload.old as Player;
-            setPlayers(prev => prev.filter(p => p.id !== deletedPlayer.id));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'players' },
+        (payload) => {
+          console.log("Player DELETE event:", payload);
+          if (payload.old) {
+            const deletedPlayer = payload.old as Player & { room_id?: string };
+            
+            // Verify the deleted player belongs to this room
+            // For DELETE, room_id should be in payload.old, but if not, check if player exists in our list
+            if (deletedPlayer.room_id === room.id) {
+              setPlayers(prev => {
+                const filtered = prev.filter(p => p.id !== deletedPlayer.id);
+                console.log("Players list updated after delete. Before:", prev.length, "After:", filtered.length);
+                return filtered;
+              });
+            } else if (!deletedPlayer.room_id) {
+              // If room_id is not in payload, check if player exists in our current list
+              // This handles cases where Supabase doesn't include room_id in DELETE payload
+              setPlayers(prev => {
+                const playerExists = prev.some(p => p.id === deletedPlayer.id);
+                if (playerExists) {
+                  console.log("Player deleted (room_id not in payload, but player found in list)");
+                  return prev.filter(p => p.id !== deletedPlayer.id);
+                }
+                return prev;
+              });
+            }
           }
         }
       )
