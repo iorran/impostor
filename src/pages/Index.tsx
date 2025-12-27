@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RoomCodeInput } from "@/components/RoomCodeInput";
@@ -9,10 +9,20 @@ import { useRoom } from "@/hooks/useRoom";
 
 const Index = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [mode, setMode] = useState<"home" | "create" | "join">("home");
   const [playerName, setPlayerName] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const { createRoom, joinRoom, isLoading } = useRoom();
+
+  // Check if there's a room code in URL params
+  useEffect(() => {
+    const codeFromUrl = searchParams.get("code");
+    if (codeFromUrl && codeFromUrl.length === 4) {
+      setRoomCode(codeFromUrl.toUpperCase());
+      setMode("join");
+    }
+  }, [searchParams]);
 
   const handleCreateRoom = async () => {
     if (!playerName.trim()) {

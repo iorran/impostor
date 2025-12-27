@@ -137,25 +137,35 @@ const Room = () => {
     init();
   }, [code, fetchRoom]);
 
-  // Check if current player was removed from the room
+  // Check if player needs to join the room (no playerId or player not in room)
   useEffect(() => {
-    if (!room?.id || !currentPlayerId || isLoading || players.length === 0) return;
-
-    const isPlayerStillInRoom = players.some(p => p.id === currentPlayerId);
+    if (!room?.id || isLoading) return;
     
-    if (!isPlayerStillInRoom) {
-      // Player was removed from the room
-      console.log("Player was removed from room, redirecting to homepage");
-      toast.error("Você foi removido da sala");
-      
-      // Clear localStorage
-      localStorage.removeItem("playerId");
-      localStorage.removeItem("roomId");
-      
-      // Redirect to homepage
-      navigate("/");
+    // If no playerId in localStorage, redirect to join page with code
+    if (!currentPlayerId) {
+      console.log("No playerId found, redirecting to join page");
+      navigate(`/?code=${code}`);
+      return;
     }
-  }, [players, currentPlayerId, room?.id, isLoading, navigate]);
+    
+    // If players list is loaded and player is not in room, they were removed
+    if (players.length > 0) {
+      const isPlayerStillInRoom = players.some(p => p.id === currentPlayerId);
+      
+      if (!isPlayerStillInRoom) {
+        // Player was removed from the room
+        console.log("Player was removed from room, redirecting to join page");
+        toast.error("Você foi removido da sala");
+        
+        // Clear localStorage
+        localStorage.removeItem("playerId");
+        localStorage.removeItem("roomId");
+        
+        // Redirect to join page with code
+        navigate(`/?code=${code}`);
+      }
+    }
+  }, [players, currentPlayerId, room?.id, isLoading, navigate, code]);
 
   // Clear word when game returns to lobby
   useEffect(() => {
@@ -175,8 +185,10 @@ const Room = () => {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${room.id}` },
         (payload) => {
+          console.log("Room subscription event:", payload.eventType, payload);
           if (payload.eventType === 'UPDATE' && payload.new) {
             const newRoom = payload.new as Room;
+            console.log("Room updated:", newRoom);
             setRoom(newRoom);
             
             // Clear word state when round changes (player_words subscription will update it)
@@ -191,15 +203,22 @@ const Room = () => {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
         (payload) => {
-          console.log("Player INSERT event:", payload);
+          console.log("Player INSERT event received:", payload);
           if (payload.new) {
-            const newPlayer = payload.new as Player;
-            setPlayers(prev => {
-              if (prev.some(p => p.id === newPlayer.id)) {
-                return prev; // Avoid duplicates
-              }
-              return sortPlayersByJoinedAt([...prev, newPlayer]);
-            });
+            const newPlayer = payload.new as Player & { room_id?: string };
+            // Verify room_id matches (safety check)
+            if (newPlayer.room_id === room.id || !newPlayer.room_id) {
+              setPlayers(prev => {
+                if (prev.some(p => p.id === newPlayer.id)) {
+                  console.log("Player already in list, skipping:", newPlayer.id);
+                  return prev; // Avoid duplicates
+                }
+                console.log("Adding new player to list:", newPlayer.name, "Total players:", prev.length + 1);
+                return sortPlayersByJoinedAt([...prev, newPlayer]);
+              });
+            } else {
+              console.warn("INSERT event for player from different room ignored");
+            }
           }
         }
       )
@@ -207,14 +226,21 @@ const Room = () => {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
         (payload) => {
-          console.log("Player UPDATE event:", payload);
+          console.log("Player UPDATE event received:", payload);
           if (payload.new) {
-            const updatedPlayer = payload.new as Player;
-            setPlayers(prev => 
-              sortPlayersByJoinedAt(
-                prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
-              )
-            );
+            const updatedPlayer = payload.new as Player & { room_id?: string };
+            // Verify room_id matches (safety check)
+            if (updatedPlayer.room_id === room.id || !updatedPlayer.room_id) {
+              setPlayers(prev => {
+                const updated = sortPlayersByJoinedAt(
+                  prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
+                );
+                console.log("Player updated in list:", updatedPlayer.name);
+                return updated;
+              });
+            } else {
+              console.warn("UPDATE event for player from different room ignored");
+            }
           }
         }
       )
@@ -305,7 +331,8 @@ const Room = () => {
   const shareViaWhatsApp = () => {
     if (!code) return;
     
-    const roomUrl = `${window.location.origin}/${code}`;
+    // Share link that goes to Index with code pre-filled
+    const roomUrl = `${window.location.origin}?code=${code}`;
     const message = `🎮 Entre na minha sala do Jogo do Impostor!\n\nCódigo da sala: ${code}\n\nLink: ${roomUrl}`;
     const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
     
@@ -630,26 +657,31 @@ const Room = () => {
                         if (!room?.id || !isHost) return;
                         
                         const newMode: GameMode = checked ? 'anonymous' : 'normal';
-                        setIsActionLoading(true);
+                        console.log("Updating game mode to:", newMode);
                         
                         try {
-                          const { error } = await supabase
+                          const { error, data } = await supabase
                             .from('rooms')
                             .update({ game_mode: newMode })
-                            .eq('id', room.id);
+                            .eq('id', room.id)
+                            .select()
+                            .single();
                           
                           if (error) {
                             console.error("Error updating game mode:", error);
                             toast.error("Erro ao atualizar modo de jogo");
+                          } else if (data) {
+                            console.log("Game mode updated successfully:", data);
+                            // Update state immediately (subscription will also update it)
+                            setRoom(data as Room);
+                            toast.success(`Modo ${newMode === 'anonymous' ? 'anônimo' : 'normal'} ativado`);
                           }
                         } catch (error) {
                           console.error("Error updating game mode:", error);
                           toast.error("Erro ao atualizar modo de jogo");
-                        } finally {
-                          setIsActionLoading(false);
                         }
                       }}
-                      disabled={isActionLoading || room?.status === 'in_progress'}
+                      disabled={room?.status === 'in_progress'}
                     />
                   </div>
                 </div>
