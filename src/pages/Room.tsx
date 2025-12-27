@@ -97,11 +97,11 @@ const Room = () => {
   }, [code, navigate]);
 
   // Helper function to sort players by joined_at
-  const sortPlayersByJoinedAt = (playersList: Player[]): Player[] => {
+  const sortPlayersByJoinedAt = useCallback((playersList: Player[]): Player[] => {
     return [...playersList].sort((a, b) => 
       new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
     );
-  };
+  }, []);
 
   // Initial load - fetch room and players once
   useEffect(() => {
@@ -175,20 +175,69 @@ const Room = () => {
     }
   }, [room?.status]);
 
+  // Fetch word when game starts (fallback if subscription misses the event)
+  useEffect(() => {
+    const fetchMyWord = async () => {
+      if (!room?.id || !currentPlayerId || room.status !== 'in_progress' || room.round_number === 0) {
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('player_words')
+          .select('word, is_impostor, round_number')
+          .eq('room_id', room.id)
+          .eq('player_id', currentPlayerId)
+          .eq('round_number', room.round_number)
+          .maybeSingle();
+
+        if (error) {
+          console.error("Error fetching player word:", error);
+          return;
+        }
+
+        if (data && data.round_number === room.round_number) {
+          console.log("Fetched word from database:", data.word, "isImpostor:", data.is_impostor);
+          setMyWord(data.word);
+          setIsImpostor(data.is_impostor);
+        } else {
+          console.log("No word found for current round, clearing state");
+          setMyWord(null);
+          setIsImpostor(false);
+        }
+      } catch (err) {
+        console.error("Error in fetchMyWord:", err);
+      }
+    };
+
+    fetchMyWord();
+  }, [room?.id, room?.status, room?.round_number, currentPlayerId]);
+
   // Realtime subscriptions
   useEffect(() => {
-    if (!room?.id || !currentPlayerId) return;
+    if (!room?.id || !currentPlayerId) {
+      console.log("Skipping subscription setup - room.id:", room?.id, "currentPlayerId:", currentPlayerId);
+      return;
+    }
 
+    console.log("Setting up realtime subscriptions for room:", room.id);
+
+    // Create separate channels for better reliability
     const roomChannel = supabase
       .channel(`room-${room.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${room.id}` },
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'rooms', 
+          filter: `id=eq.${room.id}` 
+        },
         (payload) => {
-          console.log("Room subscription event:", payload.eventType, payload);
+          console.log("Room subscription event received:", payload.eventType, payload);
           if (payload.eventType === 'UPDATE' && payload.new) {
             const newRoom = payload.new as Room;
-            console.log("Room updated:", newRoom);
+            console.log("Room updated via realtime:", newRoom);
             setRoom(newRoom);
             
             // Clear word state when round changes (player_words subscription will update it)
@@ -199,15 +248,32 @@ const Room = () => {
           }
         }
       )
+      .subscribe((status, err) => {
+        console.log("Room channel subscription status:", status, err);
+        if (status === 'SUBSCRIBED') {
+          console.log("Successfully subscribed to room changes");
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error("Room channel error:", err);
+        }
+      });
+
+    // Separate channel for players
+    const playersChannel = supabase
+      .channel(`players-${room.id}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
+        { 
+          event: 'INSERT', 
+          schema: 'public', 
+          table: 'players'
+        },
         (payload) => {
-          console.log("Player INSERT event received:", payload);
+          console.log("Player INSERT event received (all players):", payload);
           if (payload.new) {
             const newPlayer = payload.new as Player & { room_id?: string };
-            // Verify room_id matches (safety check)
-            if (newPlayer.room_id === room.id || !newPlayer.room_id) {
+            console.log("New player data:", newPlayer, "Room ID:", newPlayer.room_id, "Expected:", room.id);
+            // Filter by room_id manually
+            if (newPlayer.room_id === room.id) {
               setPlayers(prev => {
                 if (prev.some(p => p.id === newPlayer.id)) {
                   console.log("Player already in list, skipping:", newPlayer.id);
@@ -217,20 +283,25 @@ const Room = () => {
                 return sortPlayersByJoinedAt([...prev, newPlayer]);
               });
             } else {
-              console.warn("INSERT event for player from different room ignored");
+              console.log("INSERT event for player from different room ignored. Expected:", room.id, "Got:", newPlayer.room_id);
             }
           }
         }
       )
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'players', filter: `room_id=eq.${room.id}` },
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'players'
+        },
         (payload) => {
-          console.log("Player UPDATE event received:", payload);
+          console.log("Player UPDATE event received (all players):", payload);
           if (payload.new) {
             const updatedPlayer = payload.new as Player & { room_id?: string };
-            // Verify room_id matches (safety check)
-            if (updatedPlayer.room_id === room.id || !updatedPlayer.room_id) {
+            console.log("Updated player data:", updatedPlayer, "Room ID:", updatedPlayer.room_id, "Expected:", room.id);
+            // Filter by room_id manually
+            if (updatedPlayer.room_id === room.id) {
               setPlayers(prev => {
                 const updated = sortPlayersByJoinedAt(
                   prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
@@ -239,7 +310,7 @@ const Room = () => {
                 return updated;
               });
             } else {
-              console.warn("UPDATE event for player from different room ignored");
+              console.log("UPDATE event for player from different room ignored. Expected:", room.id, "Got:", updatedPlayer.room_id);
             }
           }
         }
@@ -275,6 +346,18 @@ const Room = () => {
           }
         }
       )
+      .subscribe((status, err) => {
+        console.log("Players channel subscription status:", status, err);
+        if (status === 'SUBSCRIBED') {
+          console.log("Successfully subscribed to players changes");
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error("Players channel error:", err);
+        }
+      });
+
+    // Separate channel for player_words
+    const playerWordsChannel = supabase
+      .channel(`player-words-${room.id}-${currentPlayerId}`)
       .on(
         'postgres_changes',
         { 
@@ -284,6 +367,7 @@ const Room = () => {
           filter: `room_id=eq.${room.id} AND player_id=eq.${currentPlayerId}` 
         },
         (payload) => {
+          console.log("Player words event:", payload.eventType, payload);
           const currentRoom = roomRef.current;
           
           if (!currentRoom || currentRoom.status !== 'in_progress') {
@@ -292,6 +376,7 @@ const Room = () => {
 
           const handleWordUpdate = (wordData: PlayerWord & { round_number: number }) => {
             if (wordData.round_number === currentRoom.round_number) {
+              console.log("Updating word for current round:", wordData.word);
               setMyWord(wordData.word);
               setIsImpostor(wordData.is_impostor);
             }
@@ -310,22 +395,67 @@ const Room = () => {
           }
         }
       )
-      .subscribe((status) => {
-        console.log("Realtime subscription status:", status);
+      .subscribe((status, err) => {
+        console.log("Player words channel subscription status:", status, err);
         if (status === 'SUBSCRIBED') {
-          console.log("Successfully subscribed to room changes");
+          console.log("Successfully subscribed to player words changes");
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error("Player words channel error:", err);
         }
       });
 
     return () => {
-      console.log("Cleaning up realtime subscription");
+      console.log("Cleaning up realtime subscriptions for room:", room.id);
+      roomChannel.unsubscribe();
+      playersChannel.unsubscribe();
+      playerWordsChannel.unsubscribe();
       supabase.removeChannel(roomChannel);
+      supabase.removeChannel(playersChannel);
+      supabase.removeChannel(playerWordsChannel);
     };
-  }, [room?.id, room?.status, room?.round_number, currentPlayerId]);
+  }, [room?.id, currentPlayerId, sortPlayersByJoinedAt]); // Removed room?.status and room?.round_number from dependencies
 
-  const copyRoomCode = () => {
-    navigator.clipboard.writeText(code || "");
-    toast.success("Código copiado!");
+  const copyRoomCode = async () => {
+    if (!code) {
+      toast.error("Código da sala não disponível");
+      return;
+    }
+    
+    // Check if clipboard API is available
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(code);
+        toast.success("Código copiado!");
+        return;
+      } catch (error) {
+        console.error("Error copying to clipboard:", error);
+        // Fall through to fallback method
+      }
+    }
+    
+    // Fallback: select and copy using execCommand
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = code;
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      textArea.style.left = "-999999px";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      
+      if (successful) {
+        toast.success("Código copiado!");
+      } else {
+        toast.error("Erro ao copiar código. Tente selecionar e copiar manualmente.");
+      }
+    } catch (fallbackError) {
+      console.error("Fallback copy failed:", fallbackError);
+      toast.error("Erro ao copiar código. O código é: " + code);
+    }
   };
 
   const shareViaWhatsApp = () => {
@@ -696,25 +826,31 @@ const Room = () => {
                       onValueChange={async (value: WordCategory) => {
                         if (!room?.id || !isHost) return;
                         
-                        setIsActionLoading(true);
+                        console.log("Updating word category to:", value);
+                        
                         try {
-                          const { error } = await supabase
+                          const { error, data } = await supabase
                             .from('rooms')
                             .update({ word_category: value })
-                            .eq('id', room.id);
+                            .eq('id', room.id)
+                            .select()
+                            .single();
                           
                           if (error) {
                             console.error("Error updating word category:", error);
                             toast.error("Erro ao atualizar categoria");
+                          } else if (data) {
+                            console.log("Word category updated successfully:", data);
+                            // Update state immediately (subscription will also update it)
+                            setRoom(data as Room);
+                            toast.success("Categoria atualizada");
                           }
                         } catch (error) {
                           console.error("Error updating word category:", error);
                           toast.error("Erro ao atualizar categoria");
-                        } finally {
-                          setIsActionLoading(false);
                         }
                       }}
-                      disabled={isActionLoading || room?.status === 'in_progress'}
+                      disabled={room?.status === 'in_progress'}
                     >
                       <SelectTrigger id="word-category" className="w-full">
                         <SelectValue placeholder="Selecione uma categoria" />
