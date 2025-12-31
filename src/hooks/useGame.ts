@@ -387,22 +387,8 @@ export const useGame = () => {
           .delete()
           .eq("room_id", roomId);
 
-        // Update room
-        const { error: updateError } = await supabase
-          .from("rooms")
-          .update({
-            status: "in_progress",
-            round_number: newRoundNumber,
-            word: crewmateWord,
-            impostor_word: impostorWord,
-            num_impostors: numImpostors,
-            starting_player_id: startingPlayer.id,
-          })
-          .eq("id", roomId);
-
-        if (updateError) throw updateError;
-
-        // Assign words to ALL current players in the room
+        // Assign words to ALL current players in the room FIRST
+        // This ensures words exist before room update triggers polling
         const playerWords = shuffledPlayers.map((player, index) => ({
           room_id: roomId,
           round_number: newRoundNumber,
@@ -443,6 +429,22 @@ export const useGame = () => {
           console.error("Error inserting player words:", wordsError);
           throw wordsError;
         }
+
+        // Update room AFTER words are inserted
+        // This ensures polling finds words immediately when it starts
+        const { error: updateError } = await supabase
+          .from("rooms")
+          .update({
+            status: "in_progress",
+            round_number: newRoundNumber,
+            word: crewmateWord,
+            impostor_word: impostorWord,
+            num_impostors: numImpostors,
+            starting_player_id: startingPlayer.id,
+          })
+          .eq("id", roomId);
+
+        if (updateError) throw updateError;
 
         // Verify all words were inserted correctly
         const { data: insertedWords } = await supabase
@@ -561,21 +563,8 @@ export const useGame = () => {
           throw deleteError;
         }
 
-        // Step 2: Update room with new round number, words, and starting player
-        const { error: updateError } = await supabase
-          .from("rooms")
-          .update({
-            round_number: newRoundNumber,
-            word: crewmateWord,
-            impostor_word: impostorWord,
-            starting_player_id: startingPlayer.id,
-          })
-          .eq("id", roomId);
-
-        if (updateError) throw updateError;
-
-        // Step 3: Assign new words to ALL current players in the room
-        // Ensure each player gets exactly one word for this round
+        // Step 2: Assign new words to ALL current players in the room FIRST
+        // This ensures words exist before room update triggers polling
         const playerWords = shuffledPlayers.map((player, index) => ({
           room_id: roomId,
           round_number: newRoundNumber,
@@ -616,6 +605,20 @@ export const useGame = () => {
           console.error("Error inserting player words:", wordsError);
           throw wordsError;
         }
+
+        // Step 3: Update room with new round number, words, and starting player
+        // This happens AFTER words are inserted so polling finds words immediately
+        const { error: updateError } = await supabase
+          .from("rooms")
+          .update({
+            round_number: newRoundNumber,
+            word: crewmateWord,
+            impostor_word: impostorWord,
+            starting_player_id: startingPlayer.id,
+          })
+          .eq("id", roomId);
+
+        if (updateError) throw updateError;
 
         // Step 4: Verify all words were inserted correctly
         const { data: insertedWords, error: verifyError } = await supabase

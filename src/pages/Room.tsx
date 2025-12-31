@@ -175,94 +175,6 @@ const Room = () => {
     }
   }, [room?.status]);
 
-  // Poll for word when game is in progress
-  // This is a simple polling mechanism that checks every 500ms until word is found
-  useEffect(() => {
-    if (!room?.id || !currentPlayerId || room.status !== 'in_progress' || room.round_number === 0) {
-      return;
-    }
-
-    console.log("Starting to poll for word, round:", room.round_number);
-    
-    let pollInterval: ReturnType<typeof setInterval> | null = null;
-    let pollTimeout: ReturnType<typeof setTimeout> | null = null;
-    let attempts = 0;
-    const maxAttempts = 20; // Poll for up to 10 seconds (20 * 500ms)
-    const currentRound = room.round_number; // Capture round number
-    
-    const fetchWord = async () => {
-      // Check if round changed (don't update if we're on a different round now)
-      const currentRoomState = roomRef.current;
-      if (!currentRoomState || currentRoomState.round_number !== currentRound) {
-        console.log("Round changed during polling, stopping");
-        if (pollInterval) clearInterval(pollInterval);
-        if (pollTimeout) clearTimeout(pollTimeout);
-        return;
-      }
-      
-      attempts++;
-      
-      try {
-        const { data, error } = await supabase
-          .from('player_words')
-          .select('word, is_impostor, round_number')
-          .eq('room_id', room.id)
-          .eq('player_id', currentPlayerId)
-          .eq('round_number', currentRound)
-          .maybeSingle();
-
-        if (error) {
-          console.error("Error fetching player word:", error);
-          return;
-        }
-
-        if (data && data.round_number === currentRound) {
-          console.log(`Word found after ${attempts} attempts:`, data.word);
-          setMyWord(data.word);
-          setIsImpostor(data.is_impostor);
-          
-          // Stop polling once we found the word
-          if (pollInterval) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-          }
-          if (pollTimeout) {
-            clearTimeout(pollTimeout);
-            pollTimeout = null;
-          }
-        } else if (attempts >= maxAttempts) {
-          console.log("Max polling attempts reached, stopping");
-          if (pollInterval) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-          }
-          if (pollTimeout) {
-            clearTimeout(pollTimeout);
-            pollTimeout = null;
-          }
-        }
-      } catch (err) {
-        console.error("Error in fetchWord:", err);
-      }
-    };
-
-    // Start polling immediately, then every 500ms
-    fetchWord();
-    pollInterval = setInterval(fetchWord, 500);
-    
-    // Stop polling after max attempts
-    pollTimeout = setTimeout(() => {
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
-    }, maxAttempts * 500);
-
-    return () => {
-      if (pollInterval) clearInterval(pollInterval);
-      if (pollTimeout) clearTimeout(pollTimeout);
-    };
-  }, [room?.id, room?.status, room?.round_number, currentPlayerId]);
 
   // Realtime subscriptions
   useEffect(() => {
@@ -272,6 +184,34 @@ const Room = () => {
     }
 
     console.log("Setting up realtime subscriptions for room:", room.id);
+
+    // Helper function to fetch word once if missing (fallback if realtime INSERT is missed)
+    const fetchWordIfMissing = (roomId: string, roundNumber: number, delayMs = 500) => {
+      setTimeout(async () => {
+        const currentRoom = roomRef.current;
+        // Only fetch if we're still on the same round and status is in_progress
+        if (currentRoom?.round_number === roundNumber && currentRoom.status === 'in_progress') {
+          console.log(`Fetching word for round ${roundNumber} (realtime INSERT may have been missed)`);
+          const { data: wordData } = await supabase
+            .from('player_words')
+            .select('word, is_impostor, round_number')
+            .eq('room_id', roomId)
+            .eq('player_id', currentPlayerId)
+            .eq('round_number', roundNumber)
+            .maybeSingle();
+          
+          // Double-check we're still on the same round before updating
+          const finalRoomCheck = roomRef.current;
+          if (wordData && wordData.round_number === roundNumber && 
+              finalRoomCheck?.round_number === roundNumber && 
+              finalRoomCheck?.status === 'in_progress') {
+            console.log("Word found via single fetch:", wordData.word);
+            setMyWord(wordData.word);
+            setIsImpostor(wordData.is_impostor);
+          }
+        }
+      }, delayMs);
+    };
 
     // Create separate channels for better reliability
     const roomChannel = supabase
@@ -292,28 +232,23 @@ const Room = () => {
             const oldRoundNumber = roomRef.current?.round_number || 0;
             setRoom(newRoom);
             
-            // When a new round starts, clear word state
-            // The polling useEffect will handle fetching the word
+            // When a new round starts, clear word state and fetch word if missing after delay
             if (newRoom.status === 'in_progress' && newRoom.round_number > 0 && newRoom.round_number !== oldRoundNumber) {
               console.log("New round detected:", newRoom.round_number, "Clearing word state");
               setMyWord(null);
               setIsImpostor(false);
+              // Fetch word once if realtime INSERT event is missed
+              fetchWordIfMissing(room.id, newRoom.round_number);
             } else if (newRoom.status === 'in_progress' && newRoom.round_number > 0) {
-              // Same round but status changed - just clear (polling will fetch)
+              // Same round but status changed - just clear, word should come via realtime
               setMyWord(null);
               setIsImpostor(false);
             }
           }
         }
-      )
-      .subscribe((status, err) => {
-        console.log("Room channel subscription status:", status, err);
-        if (status === 'SUBSCRIBED') {
-          console.log("Successfully subscribed to room changes");
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error("Room channel error:", err);
-        }
-      });
+      );
+
+    roomChannel.subscribe();
 
     // Separate channel for players
     const playersChannel = supabase
@@ -403,15 +338,9 @@ const Room = () => {
             }
           }
         }
-      )
-      .subscribe((status, err) => {
-        console.log("Players channel subscription status:", status, err);
-        if (status === 'SUBSCRIBED') {
-          console.log("Successfully subscribed to players changes");
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error("Players channel error:", err);
-        }
-      });
+      );
+
+    playersChannel.subscribe();
 
     // Separate channel for player_words
     const playerWordsChannel = supabase
@@ -433,9 +362,16 @@ const Room = () => {
             const wordData = payload.new as PlayerWord & { round_number: number };
             console.log("INSERT word event received:", wordData, "Current room round:", currentRoom?.round_number);
             
-            // Only update if room is in progress and round matches
-            if (currentRoom?.status === 'in_progress' && wordData.round_number === currentRoom.round_number) {
+            // Update word if room is in progress and round matches (or if round is 0, accept any round)
+            // This ensures we get the word even if the room state hasn't updated yet
+            if (currentRoom?.status === 'in_progress' && 
+                (wordData.round_number === currentRoom.round_number || currentRoom.round_number === 0)) {
               console.log("Updating word for current round (INSERT):", wordData.word);
+              setMyWord(wordData.word);
+              setIsImpostor(wordData.is_impostor);
+            } else if (!currentRoom || currentRoom.status !== 'in_progress') {
+              // If room state isn't ready yet, still accept the word (it will be used when game starts)
+              console.log("Accepting word even though room state not ready:", wordData.word);
               setMyWord(wordData.word);
               setIsImpostor(wordData.is_impostor);
             }
@@ -455,15 +391,9 @@ const Room = () => {
             }
           }
         }
-      )
-      .subscribe((status, err) => {
-        console.log("Player words channel subscription status:", status, err);
-        if (status === 'SUBSCRIBED') {
-          console.log("Successfully subscribed to player words changes");
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error("Player words channel error:", err);
-        }
-      });
+      );
+
+    playerWordsChannel.subscribe();
 
     return () => {
       console.log("Cleaning up realtime subscriptions for room:", room.id);
@@ -474,7 +404,7 @@ const Room = () => {
       supabase.removeChannel(playersChannel);
       supabase.removeChannel(playerWordsChannel);
     };
-  }, [room?.id, currentPlayerId, sortPlayersByJoinedAt]); // Removed room?.status and room?.round_number from dependencies
+  }, [room?.id, currentPlayerId, sortPlayersByJoinedAt]); // Removed myWord dependency - fetchWordIfMissing uses roomRef
 
   const copyRoomCode = async () => {
     if (!code) {
