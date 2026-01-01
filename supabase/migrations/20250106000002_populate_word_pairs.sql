@@ -265,3 +265,4 @@ INSERT INTO public.word_pairs (crewmate_word, impostor_word, category) VALUES
   ('IÔ-IÔ', 'CORDÃO', 'esportes')
 ON CONFLICT DO NOTHING;
 
+

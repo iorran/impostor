@@ -16,3 +16,4 @@ ALTER TABLE public.word_pairs ENABLE ROW LEVEL SECURITY;
 -- RLS Policies - Allow public read access
 CREATE POLICY "Anyone can view word pairs" ON public.word_pairs FOR SELECT USING (true);
 
+

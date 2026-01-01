@@ -50,3 +50,4 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION cleanup_old_word_history() TO authenticated;
 GRANT EXECUTE ON FUNCTION cleanup_old_word_history() TO service_role;
 
+
