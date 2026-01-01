@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -9,7 +10,10 @@ import { WordReveal } from "@/components/WordReveal";
 import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { useGame } from "@/hooks/useGame";
+import { useGameMutations } from "@/hooks/useGameMutations";
+import { useRoomQuery } from "@/hooks/useRoomQuery";
+import { usePlayersQuery } from "@/hooks/usePlayersQuery";
+import { usePlayerWordQuery } from "@/hooks/usePlayerWordQuery";
 import type { WordCategory } from "@/hooks/useGame";
 
 type GameStatus = "lobby" | "in_progress";
@@ -45,97 +49,39 @@ interface PlayerWord {
 const Room = () => {
   const { code } = useParams<{ code: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   
-  const [room, setRoom] = useState<Room | null>(null);
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [myWord, setMyWord] = useState<string | null>(null);
-  const [isImpostor, setIsImpostor] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isActionLoading, setIsActionLoading] = useState(false);
-  const roomRef = useRef<Room | null>(null);
-  
-  // Keep roomRef in sync with room state
-  useEffect(() => {
-    roomRef.current = room;
-  }, [room]);
-  
-  const { startGame, resetGame } = useGame();
+  // React Query hooks
+  const { data: room, isLoading: isLoadingRoom } = useRoomQuery(code);
+  const { data: players = [], isLoading: isLoadingPlayers } = usePlayersQuery(room?.id);
   const currentPlayerId = localStorage.getItem("playerId");
+  const { data: playerWord } = usePlayerWordQuery(room?.id, currentPlayerId || undefined, room?.round_number);
+  
+  // Game mutations
+  const { startGame, resetGame } = useGameMutations();
+  
+  // Derived state
   const currentPlayer = players.find(p => p.id === currentPlayerId);
   const isHost = currentPlayer?.is_host ?? false;
   const activePlayers = players.filter(p => !p.is_host || p.id === currentPlayerId);
   const canStart = activePlayers.length >= 3;
   const maxImpostors = activePlayers.length > 0 ? Math.min(activePlayers.length - 1, Math.max(1, Math.floor(activePlayers.length / 2))) : 1;
-  
-  // Derive numImpostors from room state (realtime)
   const numImpostors = room?.num_impostors ?? 1;
+  
+  // Word state from query
+  const myWord = playerWord?.word || null;
+  const isImpostor = playerWord?.is_impostor || false;
+  
+  const isLoading = isLoadingRoom || isLoadingPlayers;
+  const isActionLoading = startGame.isPending || resetGame.isPending;
 
-  // Fetch room data
-  const fetchRoom = useCallback(async () => {
-    if (!code) return;
-    
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('*')
-      .eq('code', code.toUpperCase())
-      .maybeSingle();
-    
-    if (error) {
-      console.error("Error fetching room:", error);
-      toast.error("Erro ao carregar sala");
-      return;
-    }
-    
-    if (!data) {
+  // Handle room not found
+  useEffect(() => {
+    if (!isLoadingRoom && !room && code) {
       toast.error("Sala não encontrada");
       navigate("/");
-      return;
     }
-    
-    const roomData = data as Room;
-    setRoom(roomData);
-  }, [code, navigate]);
-
-  // Helper function to sort players by joined_at
-  const sortPlayersByJoinedAt = useCallback((playersList: Player[]): Player[] => {
-    return [...playersList].sort((a, b) => 
-      new Date(a.joined_at || 0).getTime() - new Date(b.joined_at || 0).getTime()
-    );
-  }, []);
-
-  // Initial load - fetch room and players once
-  useEffect(() => {
-    const init = async () => {
-      if (!code) return;
-      
-      setIsLoading(true);
-      
-      // Fetch room
-      await fetchRoom();
-      
-      // Fetch initial players list (subscription will handle updates)
-      const { data: roomData } = await supabase
-        .from('rooms')
-        .select('id')
-        .eq('code', code.toUpperCase())
-        .maybeSingle();
-      
-      if (roomData?.id) {
-        const { data: playersData, error } = await supabase
-          .from('players')
-          .select('*')
-          .eq('room_id', roomData.id)
-          .order('joined_at', { ascending: true });
-        
-        if (!error && playersData) {
-          setPlayers(playersData as Player[]);
-        }
-      }
-      
-      setIsLoading(false);
-    };
-    init();
-  }, [code, fetchRoom]);
+  }, [isLoadingRoom, room, code, navigate]);
 
   // Check if player needs to join the room (no playerId or player not in room)
   useEffect(() => {
@@ -167,244 +113,6 @@ const Room = () => {
     }
   }, [players, currentPlayerId, room?.id, isLoading, navigate, code]);
 
-  // Clear word when game returns to lobby
-  useEffect(() => {
-    if (room?.status === 'lobby') {
-      setMyWord(null);
-      setIsImpostor(false);
-    }
-  }, [room?.status]);
-
-
-  // Realtime subscriptions
-  useEffect(() => {
-    if (!room?.id || !currentPlayerId) {
-      console.log("Skipping subscription setup - room.id:", room?.id, "currentPlayerId:", currentPlayerId);
-      return;
-    }
-
-    console.log("Setting up realtime subscriptions for room:", room.id);
-
-    // Helper function to fetch word once if missing (fallback if realtime INSERT is missed)
-    const fetchWordIfMissing = (roomId: string, roundNumber: number, delayMs = 500) => {
-      setTimeout(async () => {
-        const currentRoom = roomRef.current;
-        // Only fetch if we're still on the same round and status is in_progress
-        if (currentRoom?.round_number === roundNumber && currentRoom.status === 'in_progress') {
-          console.log(`Fetching word for round ${roundNumber} (realtime INSERT may have been missed)`);
-          const { data: wordData } = await supabase
-            .from('player_words')
-            .select('word, is_impostor, round_number')
-            .eq('room_id', roomId)
-            .eq('player_id', currentPlayerId)
-            .eq('round_number', roundNumber)
-            .maybeSingle();
-          
-          // Double-check we're still on the same round before updating
-          const finalRoomCheck = roomRef.current;
-          if (wordData && wordData.round_number === roundNumber && 
-              finalRoomCheck?.round_number === roundNumber && 
-              finalRoomCheck?.status === 'in_progress') {
-            console.log("Word found via single fetch:", wordData.word);
-            setMyWord(wordData.word);
-            setIsImpostor(wordData.is_impostor);
-          }
-        }
-      }, delayMs);
-    };
-
-    // Create separate channels for better reliability
-    const roomChannel = supabase
-      .channel(`room-${room.id}`)
-      .on(
-        'postgres_changes',
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'rooms', 
-          filter: `id=eq.${room.id}` 
-        },
-        async (payload) => {
-          console.log("Room subscription event received:", payload.eventType, payload);
-          if (payload.eventType === 'UPDATE' && payload.new) {
-            const newRoom = payload.new as Room;
-            console.log("Room updated via realtime:", newRoom);
-            const oldRoundNumber = roomRef.current?.round_number || 0;
-            setRoom(newRoom);
-            
-            // When a new round starts, clear word state and fetch word if missing after delay
-            if (newRoom.status === 'in_progress' && newRoom.round_number > 0 && newRoom.round_number !== oldRoundNumber) {
-              console.log("New round detected:", newRoom.round_number, "Clearing word state");
-              setMyWord(null);
-              setIsImpostor(false);
-              // Fetch word once if realtime INSERT event is missed
-              fetchWordIfMissing(room.id, newRoom.round_number);
-            } else if (newRoom.status === 'in_progress' && newRoom.round_number > 0) {
-              // Same round but status changed - just clear, word should come via realtime
-              setMyWord(null);
-              setIsImpostor(false);
-            }
-          }
-        }
-      );
-
-    roomChannel.subscribe();
-
-    // Separate channel for players
-    const playersChannel = supabase
-      .channel(`players-${room.id}`)
-      .on(
-        'postgres_changes',
-        { 
-          event: 'INSERT', 
-          schema: 'public', 
-          table: 'players'
-        },
-        (payload) => {
-          console.log("Player INSERT event received (all players):", payload);
-          if (payload.new) {
-            const newPlayer = payload.new as Player & { room_id?: string };
-            console.log("New player data:", newPlayer, "Room ID:", newPlayer.room_id, "Expected:", room.id);
-            // Filter by room_id manually
-            if (newPlayer.room_id === room.id) {
-              setPlayers(prev => {
-                if (prev.some(p => p.id === newPlayer.id)) {
-                  console.log("Player already in list, skipping:", newPlayer.id);
-                  return prev; // Avoid duplicates
-                }
-                console.log("Adding new player to list:", newPlayer.name, "Total players:", prev.length + 1);
-                return sortPlayersByJoinedAt([...prev, newPlayer]);
-              });
-            } else {
-              console.log("INSERT event for player from different room ignored. Expected:", room.id, "Got:", newPlayer.room_id);
-            }
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'players'
-        },
-        (payload) => {
-          console.log("Player UPDATE event received (all players):", payload);
-          if (payload.new) {
-            const updatedPlayer = payload.new as Player & { room_id?: string };
-            console.log("Updated player data:", updatedPlayer, "Room ID:", updatedPlayer.room_id, "Expected:", room.id);
-            // Filter by room_id manually
-            if (updatedPlayer.room_id === room.id) {
-              setPlayers(prev => {
-                const updated = sortPlayersByJoinedAt(
-                  prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
-                );
-                console.log("Player updated in list:", updatedPlayer.name);
-                return updated;
-              });
-            } else {
-              console.log("UPDATE event for player from different room ignored. Expected:", room.id, "Got:", updatedPlayer.room_id);
-            }
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'players' },
-        (payload) => {
-          console.log("Player DELETE event:", payload);
-          if (payload.old) {
-            const deletedPlayer = payload.old as Player & { room_id?: string };
-            
-            // Verify the deleted player belongs to this room
-            // For DELETE, room_id should be in payload.old, but if not, check if player exists in our list
-            if (deletedPlayer.room_id === room.id) {
-              setPlayers(prev => {
-                const filtered = prev.filter(p => p.id !== deletedPlayer.id);
-                console.log("Players list updated after delete. Before:", prev.length, "After:", filtered.length);
-                return filtered;
-              });
-            } else if (!deletedPlayer.room_id) {
-              // If room_id is not in payload, check if player exists in our current list
-              // This handles cases where Supabase doesn't include room_id in DELETE payload
-              setPlayers(prev => {
-                const playerExists = prev.some(p => p.id === deletedPlayer.id);
-                if (playerExists) {
-                  console.log("Player deleted (room_id not in payload, but player found in list)");
-                  return prev.filter(p => p.id !== deletedPlayer.id);
-                }
-                return prev;
-              });
-            }
-          }
-        }
-      );
-
-    playersChannel.subscribe();
-
-    // Separate channel for player_words
-    const playerWordsChannel = supabase
-      .channel(`player-words-${room.id}-${currentPlayerId}`)
-      .on(
-        'postgres_changes',
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'player_words', 
-          filter: `room_id=eq.${room.id} AND player_id=eq.${currentPlayerId}` 
-        },
-        async (payload) => {
-          console.log("Player words event:", payload.eventType, payload);
-          const currentRoom = roomRef.current;
-          
-          // For INSERT events, update if it matches current round
-          if (payload.eventType === 'INSERT' && payload.new) {
-            const wordData = payload.new as PlayerWord & { round_number: number };
-            console.log("INSERT word event received:", wordData, "Current room round:", currentRoom?.round_number);
-            
-            // Update word if room is in progress and round matches (or if round is 0, accept any round)
-            // This ensures we get the word even if the room state hasn't updated yet
-            if (currentRoom?.status === 'in_progress' && 
-                (wordData.round_number === currentRoom.round_number || currentRoom.round_number === 0)) {
-              console.log("Updating word for current round (INSERT):", wordData.word);
-              setMyWord(wordData.word);
-              setIsImpostor(wordData.is_impostor);
-            } else if (!currentRoom || currentRoom.status !== 'in_progress') {
-              // If room state isn't ready yet, still accept the word (it will be used when game starts)
-              console.log("Accepting word even though room state not ready:", wordData.word);
-              setMyWord(wordData.word);
-              setIsImpostor(wordData.is_impostor);
-            }
-          } else if (payload.eventType === 'UPDATE' && payload.new) {
-            const wordData = payload.new as PlayerWord & { round_number: number };
-            if (currentRoom?.status === 'in_progress' && wordData.round_number === currentRoom.round_number) {
-              console.log("Updating word for current round (UPDATE):", wordData.word);
-              setMyWord(wordData.word);
-              setIsImpostor(wordData.is_impostor);
-            }
-          } else if (payload.eventType === 'DELETE' && payload.old) {
-            const deletedWord = payload.old as PlayerWord & { round_number: number };
-            if (currentRoom && deletedWord.round_number === currentRoom.round_number) {
-              console.log("Word deleted for current round");
-              setMyWord(null);
-              setIsImpostor(false);
-            }
-          }
-        }
-      );
-
-    playerWordsChannel.subscribe();
-
-    return () => {
-      console.log("Cleaning up realtime subscriptions for room:", room.id);
-      roomChannel.unsubscribe();
-      playersChannel.unsubscribe();
-      playerWordsChannel.unsubscribe();
-      supabase.removeChannel(roomChannel);
-      supabase.removeChannel(playersChannel);
-      supabase.removeChannel(playerWordsChannel);
-    };
-  }, [room?.id, currentPlayerId, sortPlayersByJoinedAt]); // Removed myWord dependency - fetchWordIfMissing uses roomRef
 
   const copyRoomCode = async () => {
     if (!code) {
@@ -468,31 +176,20 @@ const Room = () => {
       return;
     }
     
-    setIsActionLoading(true);
-    
-    try {
-      await startGame(room.id, currentPlayerId, numImpostors);
-      // Room will be updated automatically via realtime subscription
-    } catch (error) {
-      // Error is already handled in the hook
-    } finally {
-      setIsActionLoading(false);
-    }
+    startGame.mutate({
+      roomId: room.id,
+      hostPlayerId: currentPlayerId,
+      numImpostors,
+    });
   };
 
   const handleRestart = async () => {
     if (!room?.id || !currentPlayerId) return;
     
-    setIsActionLoading(true);
-    
-    try {
-      await resetGame(room.id, currentPlayerId);
-      // Room and words will be updated automatically via realtime subscriptions
-    } catch (error) {
-      // Error is already handled in the hook
-    } finally {
-      setIsActionLoading(false);
-    }
+    resetGame.mutate({
+      roomId: room.id,
+      hostPlayerId: currentPlayerId,
+    });
   };
 
   const handleLeave = async () => {
@@ -526,8 +223,6 @@ const Room = () => {
       return;
     }
 
-    setIsActionLoading(true);
-
     try {
       // If game is in progress, reset to lobby first
       if (room.status === 'in_progress') {
@@ -552,7 +247,6 @@ const Room = () => {
         if (resetError) {
           console.error("Error resetting room:", resetError);
           toast.error("Erro ao resetar sala");
-          setIsActionLoading(false);
           return;
         }
       }
@@ -570,12 +264,14 @@ const Room = () => {
         return;
       }
 
+      // Invalidate queries to refetch
+      queryClient.invalidateQueries({ queryKey: ["players", room.id] });
+      queryClient.invalidateQueries({ queryKey: ["room", code] });
+      
       toast.success(`${playerToRemove.name} removido da sala`);
     } catch (error) {
       console.error("Error removing player:", error);
       toast.error("Erro ao remover jogador");
-    } finally {
-      setIsActionLoading(false);
     }
   };
 
@@ -596,8 +292,6 @@ const Room = () => {
       return;
     }
 
-    setIsActionLoading(true);
-
     try {
       // Update room's host_player_id
       const { error: roomError } = await supabase
@@ -608,7 +302,6 @@ const Room = () => {
       if (roomError) {
         console.error("Error updating room host:", roomError);
         toast.error("Erro ao delegar host");
-        setIsActionLoading(false);
         return;
       }
 
@@ -636,12 +329,14 @@ const Room = () => {
         return;
       }
 
+      // Invalidate queries to refetch
+      queryClient.invalidateQueries({ queryKey: ["players", room.id] });
+      queryClient.invalidateQueries({ queryKey: ["room", code] });
+      
       toast.success(`${newHost.name} é agora o host`);
     } catch (error) {
       console.error("Error delegating host:", error);
       toast.error("Erro ao delegar host");
-    } finally {
-      setIsActionLoading(false);
     }
   };
 
@@ -746,11 +441,12 @@ const Room = () => {
                     onChange={async (e) => {
                       const value = parseInt(e.target.value, 10);
                       if (!isNaN(value) && value >= 1 && value <= maxImpostors && room?.id) {
-                        // Update room in realtime - subscription will update state automatically
                         await supabase
                           .from('rooms')
                           .update({ num_impostors: value })
                           .eq('id', room.id);
+                        // Invalidate to refetch
+                        queryClient.invalidateQueries({ queryKey: ["room", code] });
                       }
                     }}
                     disabled={!canStart || isActionLoading}
@@ -793,8 +489,8 @@ const Room = () => {
                             toast.error("Erro ao atualizar modo de jogo");
                           } else if (data) {
                             console.log("Game mode updated successfully:", data);
-                            // Update state immediately (subscription will also update it)
-                            setRoom(data as Room);
+                            // Invalidate to refetch
+                            queryClient.invalidateQueries({ queryKey: ["room", code] });
                             toast.success(`Modo ${newMode === 'anonymous' ? 'anônimo' : 'normal'} ativado`);
                           }
                         } catch (error) {
@@ -832,8 +528,8 @@ const Room = () => {
                             toast.error("Erro ao atualizar categoria");
                           } else if (data) {
                             console.log("Word category updated successfully:", data);
-                            // Update state immediately (subscription will also update it)
-                            setRoom(data as Room);
+                            // Invalidate to refetch
+                            queryClient.invalidateQueries({ queryKey: ["room", code] });
                             toast.success("Categoria atualizada");
                           }
                         } catch (error) {
