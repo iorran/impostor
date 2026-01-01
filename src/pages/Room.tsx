@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PlayerCard } from "@/components/PlayerCard";
 import { WordReveal } from "@/components/WordReveal";
-import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star, MessageCircle, ArrowRight } from "lucide-react";
+import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star, MessageCircle, ArrowRight, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useGameMutations } from "@/hooks/useGameMutations";
@@ -233,30 +233,93 @@ const Room = () => {
     }
 
     try {
-      // If game is in progress, reset to lobby first
+      // If game is in progress, handle special cases
       if (room.status === 'in_progress') {
-        // Clear all player words
+        // Clear player words for the removed player
         await supabase
           .from('player_words')
           .delete()
-          .eq('room_id', room.id);
+          .eq('room_id', room.id)
+          .eq('player_id', playerIdToRemove);
 
-        // Reset room to lobby
-        const { error: resetError } = await supabase
-          .from('rooms')
-          .update({
-            status: 'lobby',
-            round_number: 0,
-            word: null,
-            impostor_word: null,
-            starting_player_id: null,
-          })
-          .eq('id', room.id);
+        // Get all players first to determine order
+        const { data: allPlayers } = await supabase
+          .from('players')
+          .select('id')
+          .eq('room_id', room.id)
+          .order('joined_at', { ascending: true });
 
-        if (resetError) {
-          console.error("Error resetting room:", resetError);
-          toast.error("Erro ao resetar sala");
+        if (!allPlayers || allPlayers.length <= 1) {
+          toast.error("Não é possível remover o último jogador");
           return;
+        }
+
+        // Get remaining players (excluding the one to be removed)
+        const remainingPlayers = allPlayers.filter(p => p.id !== playerIdToRemove);
+
+        if (remainingPlayers.length === 0) {
+          toast.error("Não é possível remover o último jogador");
+          return;
+        }
+
+        // Prepare room update object
+        const roomUpdate: any = {};
+
+        // If removed player is the current player, move to next player
+        if (room.current_player_id === playerIdToRemove) {
+          // Find the index of current player in the original list
+          const currentPlayerIndex = allPlayers.findIndex(p => p.id === room.current_player_id);
+          
+          // Find the next player that is not being removed
+          let nextPlayerIndex = (currentPlayerIndex + 1) % allPlayers.length;
+          while (allPlayers[nextPlayerIndex].id === playerIdToRemove) {
+            nextPlayerIndex = (nextPlayerIndex + 1) % allPlayers.length;
+          }
+          
+          roomUpdate.current_player_id = allPlayers[nextPlayerIndex].id;
+        }
+
+        // If removed player is the starting player, set a new starting player
+        if (room.starting_player_id === playerIdToRemove) {
+          roomUpdate.starting_player_id = remainingPlayers[0].id;
+          // If current_player_id was not set above, also update it
+          if (!roomUpdate.current_player_id) {
+            roomUpdate.current_player_id = remainingPlayers[0].id;
+          }
+        }
+
+        // If removed player is the host, delegate to first remaining player
+        if (playerToRemove.is_host) {
+          const newHost = remainingPlayers[0];
+          roomUpdate.host_player_id = newHost.id;
+          
+          // Update new host's is_host flag
+          await supabase
+            .from('players')
+            .update({ is_host: true })
+            .eq('id', newHost.id)
+            .eq('room_id', room.id);
+
+          // Update old host's is_host flag
+          await supabase
+            .from('players')
+            .update({ is_host: false })
+            .eq('id', playerIdToRemove)
+            .eq('room_id', room.id);
+        }
+
+        // Update room if needed
+        if (Object.keys(roomUpdate).length > 0) {
+          const { error: updateError } = await supabase
+            .from('rooms')
+            .update(roomUpdate)
+            .eq('id', room.id);
+
+          if (updateError) {
+            console.error("Error updating room:", updateError);
+            toast.error("Erro ao atualizar sala");
+            return;
+          }
         }
       }
 
@@ -645,7 +708,7 @@ const Room = () => {
               </div>
             )}
 
-            {/* Player List (names only) */}
+            {/* Player List */}
             <div className="space-y-2 pt-6 border-t border-border">
               <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
                 Jogadores
@@ -676,6 +739,19 @@ const Room = () => {
                     )}
                     {room?.starting_player_id === player.id && room?.current_player_id !== player.id && (
                       <Star className="w-3 h-3 text-primary fill-primary absolute top-1 right-1" />
+                    )}
+                    {/* Remove button for host during match */}
+                    {isHost && player.id !== currentPlayerId && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleRemovePlayer(player.id)}
+                        className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10 absolute top-1 left-1"
+                        aria-label={`Remover ${player.name}`}
+                        title="Remover jogador"
+                      >
+                        <X className="w-3 h-3" />
+                      </Button>
                     )}
                   </div>
                 ))}
