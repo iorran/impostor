@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PlayerCard } from "@/components/PlayerCard";
 import { WordReveal } from "@/components/WordReveal";
-import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star, MessageCircle } from "lucide-react";
+import { Copy, LogOut, Play, RotateCcw, Users, Loader2, Star, MessageCircle, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useGameMutations } from "@/hooks/useGameMutations";
@@ -30,6 +30,7 @@ interface Room {
   num_impostors: number;
   game_mode: GameMode;
   starting_player_id: string | null;
+  current_player_id: string | null;
   word_category: WordCategory | null;
 }
 
@@ -58,7 +59,7 @@ const Room = () => {
   const { data: playerWord } = usePlayerWordQuery(room?.id, currentPlayerId || undefined, room?.round_number);
   
   // Game mutations
-  const { startGame, resetGame } = useGameMutations();
+  const { startGame, resetGame, nextPlayer } = useGameMutations();
   
   // Derived state
   const currentPlayer = players.find(p => p.id === currentPlayerId);
@@ -73,7 +74,7 @@ const Room = () => {
   const isImpostor = playerWord?.is_impostor || false;
   
   const isLoading = isLoadingRoom || isLoadingPlayers;
-  const isActionLoading = startGame.isPending || resetGame.isPending;
+  const isActionLoading = startGame.isPending || resetGame.isPending || nextPlayer.isPending;
 
   // Handle room not found
   useEffect(() => {
@@ -189,6 +190,14 @@ const Room = () => {
     resetGame.mutate({
       roomId: room.id,
       hostPlayerId: currentPlayerId,
+    });
+  };
+
+  const handleNextPlayer = async () => {
+    if (!room?.id) return;
+    
+    nextPlayer.mutate({
+      roomId: room.id,
     });
   };
 
@@ -606,8 +615,23 @@ const Room = () => {
               />
             )}
 
+            {/* Current Player Indicator */}
+            {room?.current_player_id && (
+              <div className="bg-primary/10 border-2 border-primary p-4 rounded-lg">
+                <div className="flex items-center justify-center gap-2">
+                  <MessageCircle className="w-5 h-5 text-primary" />
+                  <p className="text-sm">
+                    <span className="font-bold text-primary text-lg">
+                      {players.find(p => p.id === room.current_player_id)?.name || 'Jogador'}
+                    </span>
+                    {' '}está falando
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Starting Player Indicator */}
-            {room?.starting_player_id && (
+            {room?.starting_player_id && room.starting_player_id !== room?.current_player_id && (
               <div className="bg-secondary border border-border p-4 rounded-lg">
                 <div className="flex items-center justify-center gap-2">
                   <Star className="w-4 h-4 text-primary fill-primary" />
@@ -615,7 +639,7 @@ const Room = () => {
                     <span className="font-medium text-foreground">
                       {players.find(p => p.id === room.starting_player_id)?.name || 'Jogador'}
                     </span>
-                    {' '}começa esta rodada
+                    {' '}começou esta rodada
                   </p>
                 </div>
               </div>
@@ -630,22 +654,51 @@ const Room = () => {
                 {players.map((player) => (
                   <div
                     key={player.id}
-                    className={`p-3 bg-secondary border border-border text-center relative ${
-                      player.id === currentPlayerId ? "border-primary" : ""
+                    className={`p-3 bg-secondary border-2 text-center relative transition-all ${
+                      player.id === currentPlayerId ? "border-primary" : "border-border"
                     } ${
-                      room?.starting_player_id === player.id ? "border-primary/50" : ""
+                      room?.current_player_id === player.id 
+                        ? "bg-primary/20 border-primary shadow-lg scale-105" 
+                        : ""
+                    } ${
+                      room?.starting_player_id === player.id && room?.current_player_id !== player.id
+                        ? "border-primary/50" 
+                        : ""
                     }`}
                   >
-                    <span className="text-sm">
+                    <span className={`text-sm font-medium ${
+                      room?.current_player_id === player.id ? "text-primary" : ""
+                    }`}>
                       {player.name}
                     </span>
-                    {room?.starting_player_id === player.id && (
+                    {room?.current_player_id === player.id && (
+                      <MessageCircle className="w-4 h-4 text-primary absolute top-1 right-1" />
+                    )}
+                    {room?.starting_player_id === player.id && room?.current_player_id !== player.id && (
                       <Star className="w-3 h-3 text-primary fill-primary absolute top-1 right-1" />
                     )}
                   </div>
                 ))}
               </div>
             </div>
+
+            {/* Next Player Button */}
+            {room?.status === "in_progress" && room?.current_player_id && (
+              <Button
+                variant="default"
+                size="lg"
+                className="w-full"
+                onClick={handleNextPlayer}
+                disabled={isActionLoading}
+              >
+                {isActionLoading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <ArrowRight className="w-5 h-5" />
+                )}
+                Próximo Jogador
+              </Button>
+            )}
 
             {/* Host Controls */}
             {isHost && (

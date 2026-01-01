@@ -16,6 +16,7 @@ export interface Room {
   num_impostors: number;
   game_mode: GameMode;
   starting_player_id: string | null;
+  current_player_id: string | null;
   word_category: WordCategory | null;
 }
 

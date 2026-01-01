@@ -6,6 +6,7 @@ import { RoomCodeInput } from "@/components/RoomCodeInput";
 import { Users, ArrowRight, UserX } from "lucide-react";
 import { toast } from "sonner";
 import { useRoom } from "@/hooks/useRoom";
+import { getPlayerName, savePlayerName } from "@/lib/playerStorage";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -14,6 +15,14 @@ const Index = () => {
   const [playerName, setPlayerName] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const { createRoom, joinRoom, isLoading } = useRoom();
+
+  // Load player name from localStorage on mount
+  useEffect(() => {
+    const savedName = getPlayerName();
+    if (savedName) {
+      setPlayerName(savedName);
+    }
+  }, []);
 
   // Check if there's a room code in URL params
   useEffect(() => {
@@ -29,6 +38,9 @@ const Index = () => {
       toast.error("Digite seu nome");
       return;
     }
+    
+    // Save name to localStorage
+    savePlayerName(playerName.trim());
     
     try {
       const result = await createRoom(playerName.trim());
@@ -47,6 +59,9 @@ const Index = () => {
       toast.error("Código da sala deve ter 4 caracteres");
       return;
     }
+    
+    // Save name to localStorage
+    savePlayerName(playerName.trim());
     
     try {
       const result = await joinRoom(roomCode.toUpperCase(), playerName.trim());

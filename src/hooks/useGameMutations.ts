@@ -187,6 +187,7 @@ export const useGameMutations = () => {
           impostor_word: impostorWord,
           num_impostors: numImpostors,
           starting_player_id: startingPlayer.id,
+          current_player_id: startingPlayer.id,
         })
         .eq("id", roomId);
 
@@ -382,6 +383,7 @@ export const useGameMutations = () => {
           word: crewmateWord,
           impostor_word: impostorWord,
           starting_player_id: startingPlayer.id,
+          current_player_id: startingPlayer.id,
         })
         .eq("id", roomId);
 
@@ -414,9 +416,79 @@ export const useGameMutations = () => {
     },
   });
 
+  const nextPlayer = useMutation({
+    mutationFn: async ({
+      roomId,
+    }: {
+      roomId: string;
+    }) => {
+      // Get room
+      const { data: roomData, error: roomError } = await supabase
+        .from("rooms")
+        .select("*")
+        .eq("id", roomId)
+        .single();
+
+      if (roomError) throw roomError;
+      if (!roomData) throw new Error("Room not found");
+
+      if (!roomData.current_player_id || !roomData.starting_player_id) {
+        throw new Error("Game not started or no starting player");
+      }
+
+      // Get all players
+      const { data: playersData, error: playersError } = await supabase
+        .from("players")
+        .select("*")
+        .eq("room_id", roomId)
+        .order("joined_at", { ascending: true });
+
+      if (playersError) throw playersError;
+      if (!playersData || playersData.length === 0) {
+        throw new Error("No players found");
+      }
+
+      // Find current player index
+      const currentPlayerIndex = playersData.findIndex(
+        (p) => p.id === roomData.current_player_id
+      );
+
+      if (currentPlayerIndex === -1) {
+        throw new Error("Current player not found");
+      }
+
+      // Get next player index (loop back to start if at end)
+      const nextPlayerIndex =
+        (currentPlayerIndex + 1) % playersData.length;
+      const nextPlayer = playersData[nextPlayerIndex];
+
+      // Update room with next player
+      const { error: updateError } = await supabase
+        .from("rooms")
+        .update({
+          current_player_id: nextPlayer.id,
+        })
+        .eq("id", roomId);
+
+      if (updateError) throw updateError;
+
+      return { success: true, nextPlayerId: nextPlayer.id };
+    },
+    onSuccess: (_, variables) => {
+      // Invalidate queries to refetch fresh data
+      queryClient.invalidateQueries({ queryKey: ["room"] });
+      queryClient.invalidateQueries({ queryKey: ["players", variables.roomId] });
+    },
+    onError: (error: any) => {
+      console.error("Error moving to next player:", error);
+      toast.error(error.message || "Erro ao avançar jogador");
+    },
+  });
+
   return {
     startGame,
     resetGame,
+    nextPlayer,
   };
 };
 
