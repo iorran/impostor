@@ -129,8 +129,8 @@ export const useGameMutations = () => {
       }
 
       const newRoundNumber = roomData.round_number + 1;
-      const randomIndex = Math.floor(Math.random() * shuffledPlayers.length);
-      const startingPlayer = shuffledPlayers[randomIndex];
+      const startingPlayerIndex = Math.floor(Math.random() * shuffledPlayers.length);
+      const startingPlayer = shuffledPlayers[startingPlayerIndex];
 
       // Clear ALL old words for this room
       await supabase
@@ -321,8 +321,8 @@ export const useGameMutations = () => {
       }
 
       const newRoundNumber = roomData.round_number + 1;
-      const randomIndex = Math.floor(Math.random() * shuffledPlayers.length);
-      const startingPlayer = shuffledPlayers[randomIndex];
+      const startingPlayerIndex = Math.floor(Math.random() * shuffledPlayers.length);
+      const startingPlayer = shuffledPlayers[startingPlayerIndex];
 
       // Clear ALL old words for this room
       const { error: deleteError } = await supabase
