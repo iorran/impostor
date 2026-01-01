@@ -682,8 +682,10 @@ const Room = () => {
               </div>
             </div>
 
-            {/* Next Player Button */}
-            {room?.status === "in_progress" && room?.current_player_id && (
+            {/* Next Player Button - Only visible for current player */}
+            {room?.status === "in_progress" && 
+             room?.current_player_id && 
+             currentPlayerId === room.current_player_id && (
               <Button
                 variant="default"
                 size="lg"
